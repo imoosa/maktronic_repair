@@ -1,0 +1,90 @@
+{% macro status_badge(status, status_flow) %}
+    {% set s = status_flow.get(status, {'label': status, 'icon': '•', 'color': '#90A4AE'}) %}
+    <span class="status-pill" style="background: {{ s.color }}20; color: {{ s.color }}; border: 1px solid {{ s.color }}40;">
+        {{ s.icon }} {{ s.label }}
+    </span>
+{% endmacro %}
+
+{% macro action_buttons(job, user_role) %}
+    {# Admin Actions #}
+    {% if user_role in ['admin', 'manager'] %}
+        {% if job.status == 'received' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="send_for_inspection">
+                <button type="submit" class="btn btn-primary" style="width:100%">🔍 Send for Inspection</button>
+            </form>
+        {% endif %}
+
+        {% if job.status == 'estimate_sent' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="approve_estimate">
+                <button type="submit" class="btn btn-success" style="width:100%">👍 Approve Estimate</button>
+            </form>
+            <button onclick="openModal('rejectEstimateModal')" class="btn btn-danger" style="width:100%">🚫 Reject Estimate</button>
+        {% endif %}
+
+        {% if job.status == 'estimate_approved' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="start_repair">
+                <button type="submit" class="btn btn-primary" style="width:100%">🔧 Start Repair</button>
+            </form>
+        {% endif %}
+
+        {% if job.status == 'repair_done' %}
+            <button onclick="openModal('uploadInvoiceModal')" class="btn btn-success" style="width:100%">📎 Upload Invoice</button>
+        {% endif %}
+
+        {% if job.status == 'invoice_uploaded' and job.payment_status != 'paid' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="send_payment_notification">
+                <button type="submit" class="btn btn-blue" style="width:100%">💳 Send Payment Link</button>
+            </form>
+        {% endif %}
+
+        {% if job.status == 'payment_received' %}
+            <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="width:100%">🚚 Dispatch Item</button>
+        {% endif %}
+
+        {% if job.status == 'dispatched' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="delivered">
+                <button type="submit" class="btn btn-success" style="width:100%">🏠 Mark Delivered</button>
+            </form>
+        {% endif %}
+
+        {% if job.status == 'delivered' %}
+            <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="close">
+                <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
+            </form>
+        {% endif %}
+    {% endif %}
+
+    {# Technician Actions #}
+    {% if user_role == 'technician' %}
+        {% if job.status == 'sent_for_inspection' %}
+            <button onclick="openModal('inspectionModal')" class="btn btn-primary" style="width:100%">🔍 Complete Inspection</button>
+        {% endif %}
+
+        {% if job.status == 'inspection_completed' %}
+            <button onclick="openModal('estimateModal')" class="btn btn-success" style="width:100%">📄 Generate Estimate</button>
+        {% endif %}
+
+        {% if job.status == 'estimate_approved' %}
+            <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+                <input type="hidden" name="action" value="start_repair">
+                <button type="submit" class="btn btn-primary" style="width:100%">🔧 Start Repair</button>
+            </form>
+        {% endif %}
+
+        {% if job.status == 'in_repair' %}
+            <button onclick="openModal('repairCompleteModal')" class="btn btn-success" style="width:100%">✅ Mark Repair Complete</button>
+            <button onclick="openModal('progressModal')" class="btn btn-secondary" style="width:100%">📝 Add Progress Note</button>
+        {% endif %}
+    {% endif %}
+
+    {# Common Actions (visible to both roles where appropriate) #}
+    {% if job.status == 'in_repair' and user_role == 'admin' %}
+        <button onclick="openModal('progressModal')" class="btn btn-secondary" style="width:100%">📝 View Progress Notes</button>
+    {% endif %}
+{% endmacro %}

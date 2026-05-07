@@ -1,18 +1,13 @@
 {% extends 'shared/base.html' %}
-{% block title %}{{ job.job_id }} — {% if session.get('role') in ('admin','manager') %}Admin{% else %}Technician{% endif %}{% endblock %}
+{% block title %}{{ job.job_id }} — Technician{% endblock %}
 {% block page_title %}{{ job.job_id }}{% endblock %}
 {% block page_sub %}{{ job.customer_name }} · {{ job.item_type }}{% endblock %}
 
 {% block nav %}
 <div class="nav-section">
   <div class="nav-label">Main</div>
-  {% if session.get('role') in ('admin', 'manager') %}
-  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
-  <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
-  {% else %}
   <a href="/tech" class="nav-item"><span class="icon">📊</span> Dashboard</a>
   <a href="/tech/jobs" class="nav-item active"><span class="icon">🔧</span> My Jobs</a>
-  {% endif %}
 </div>
 {% endblock %}
 
@@ -169,9 +164,9 @@
         <button onclick="openModal('inspectionModal')" class="btn btn-primary" style="width:100%">🔍 Complete Inspection</button>
         {% endif %}
 
-        {# inspection_completed → generate estimate #}
+        {# inspection_completed → send estimate #}
         {% if job.status == 'inspection_completed' %}
-        <button onclick="openModal('estimateModal')" class="btn btn-success" style="width:100%">📄 Generate Estimate</button>
+        <button onclick="openModal('estimateModal')" class="btn btn-success" style="width:100%">📄 Send Estimate to Customer</button>
         {% endif %}
 
         {# estimate_approved → start repair #}
@@ -238,7 +233,7 @@
   <button onclick="openModal('inspectionModal')" class="btn btn-primary" style="flex:1">🔍 Inspection Done</button>
   {% endif %}
   {% if job.status == 'inspection_completed' %}
-  <button onclick="openModal('estimateModal')" class="btn btn-success" style="flex:1">📄 Generate Estimate</button>
+  <button onclick="openModal('estimateModal')" class="btn btn-success" style="flex:1">📄 Send Estimate</button>
   {% endif %}
   {% if job.status == 'estimate_approved' %}
   <form method="POST" action="/tech/jobs/{{ job.job_id }}/update" style="flex:1">
@@ -310,7 +305,7 @@
 <div class="modal-overlay" id="estimateModal">
   <div class="modal">
     <div class="modal-header">
-      <div class="modal-title">📄 Generate Estimate</div>
+      <div class="modal-title">📄 Send Estimate to Customer</div>
       <button class="modal-close" onclick="closeModal('estimateModal')">✕</button>
     </div>
     <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
@@ -336,7 +331,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('estimateModal')">Cancel</button>
-        <button type="submit" class="btn btn-success">📄 Generate Estimate</button>
+        <button type="submit" class="btn btn-success">📤 Send Estimate</button>
       </div>
     </form>
   </div>
@@ -441,10 +436,5 @@ function updateEstimateDisplay(val) {
   var n = parseFloat(val) || 0;
   document.getElementById('estimate_display').textContent = '₹' + n.toFixed(2);
 }
-{% if job.status == 'inspection_completed' %}
-window.addEventListener('DOMContentLoaded', function() {
-  openModal('estimateModal');
-});
-{% endif %}
 </script>
 {% endblock %}

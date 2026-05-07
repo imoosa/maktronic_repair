@@ -271,6 +271,42 @@
   </div>
 </div>
 
+<!-- Add this after the progress tracker -->
+<div class="card mb-4">
+    <div class="card-header">
+        <span class="card-title">📋 Current Status</span>
+        {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•', 'color': '#90A4AE'}) %}
+        <span class="status-pill" style="background: {{ s.color }}20; color: {{ s.color }}; border: 1px solid {{ s.color }}40;">
+            {{ s.icon }} {{ s.label }}
+        </span>
+    </div>
+    <div style="font-size: 13px; color: var(--muted);">
+        {% if job.status == 'sent_for_inspection' %}
+            🔍 Awaiting technician inspection
+        {% elif job.status == 'inspection_completed' %}
+            ✅ Inspection complete - waiting for estimate
+        {% elif job.status == 'estimate_sent' %}
+            📄 Estimate sent - waiting for admin approval
+        {% elif job.status == 'estimate_approved' %}
+            👍 Estimate approved - ready for repair
+        {% elif job.status == 'in_repair' %}
+            🔧 Device is being repaired
+        {% elif job.status == 'repair_done' %}
+            ✅ Repair complete - awaiting invoice upload
+        {% elif job.status == 'invoice_uploaded' %}
+            📎 Invoice uploaded - pending payment
+        {% elif job.status == 'payment_received' %}
+            💰 Payment received - ready for dispatch
+        {% elif job.status == 'dispatched' %}
+            🚚 Dispatched - in transit
+        {% elif job.status == 'delivered' %}
+            🏠 Delivered - ready to close
+        {% elif job.status == 'closed' %}
+            🔒 Job completed
+        {% endif %}
+    </div>
+</div>
+
 <!-- MAIN GRID (desktop: 2 columns, mobile: auto-stack) -->
 <div class="job-detail-container">
 

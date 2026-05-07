@@ -1,18 +1,13 @@
 {% extends 'shared/base.html' %}
-{% block title %}{{ job.job_id }} — {% if session.get('role') in ('admin','manager') %}Admin{% else %}Technician{% endif %}{% endblock %}
+{% block title %}{{ job.job_id }} — Technician{% endblock %}
 {% block page_title %}{{ job.job_id }}{% endblock %}
 {% block page_sub %}{{ job.customer_name }} · {{ job.item_type }}{% endblock %}
 
 {% block nav %}
 <div class="nav-section">
   <div class="nav-label">Main</div>
-  {% if session.get('role') in ('admin', 'manager') %}
-  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
-  <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
-  {% else %}
   <a href="/tech" class="nav-item"><span class="icon">📊</span> Dashboard</a>
   <a href="/tech/jobs" class="nav-item active"><span class="icon">🔧</span> My Jobs</a>
-  {% endif %}
 </div>
 {% endblock %}
 

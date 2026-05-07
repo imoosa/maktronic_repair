@@ -375,7 +375,7 @@ def admin_new_job():
             'item_type': request.form.get('item_type'),
             'barcode': barcode,
             'assigned_tech_id': request.form.get('assigned_tech_id') or None,
-            'status': 'barcode_gen',
+            'status': 'sent_for_inspection',
             'notes': request.form.get('notes'),
         }
         db.execute("""
@@ -393,9 +393,9 @@ def admin_new_job():
                 db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
                            (job_id, filename))
 
-        log_action(db, job_id, 'Job Created & Barcode Generated', session['user_id'], f"Customer: {data['customer_name']}")
+        log_action(db, job_id, 'Job Created & Sent for Inspection', session['user_id'], f"Customer: {data['customer_name']}")
         db.commit()
-        flash(f'Job {job_id} created successfully! Barcode generated.', 'success')
+        flash(f'Job {job_id} created successfully! Sent for inspection.', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     db = get_db()
@@ -431,7 +431,12 @@ def admin_update_job(job_id):
     action = request.form.get('action')
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    if action == 'assign_tech':
+    if action == 'update_status':
+        new_status = request.form.get('status')
+        db.execute("UPDATE jobs SET status=?, updated_at=? WHERE job_id=?", (new_status, now, job_id))
+        log_action(db, job_id, f'Status → {new_status}', session['user_id'])
+
+    elif action == 'assign_tech':
         tech_id = request.form.get('tech_id')
         db.execute("UPDATE jobs SET assigned_tech_id=?, updated_at=? WHERE job_id=?", (tech_id, now, job_id))
         tech = db.execute("SELECT name FROM users WHERE id=?", (tech_id,)).fetchone()
@@ -471,7 +476,7 @@ def admin_update_job(job_id):
         db.execute("""
             UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
             courier_receipt_path=?, dispatch_date=?, updated_at=? WHERE job_id=?
-        """, (tracking, courier_name, receipt_path, dispatch_date, now))
+        """, (tracking, courier_name, receipt_path, dispatch_date, now, job_id))
         log_action(db, job_id, 'Non-repairable item dispatched back to customer', session['user_id'], f'Courier: {courier_name}, Tracking: {tracking}')
 
     elif action == 'generate_estimate':
@@ -544,7 +549,7 @@ def admin_update_job(job_id):
             flash('Please upload a valid invoice file', 'error')
 
     elif action == 'send_payment_notification':
-        # Create Razorpay order and generate a secure payment link
+        # Always re-fetch fresh job data for payment generation
         job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         amount_paise = int(float(job['invoice_total_amount'] or job['total_amount'] or 0) * 100)
         if amount_paise <= 0:
@@ -552,24 +557,30 @@ def admin_update_job(job_id):
             return redirect(url_for('admin_job_detail', job_id=job_id))
 
         try:
+            # Always create a fresh Razorpay order (idempotent — safe to recreate)
             order = razorpay_client.order.create({
                 'amount': amount_paise,
                 'currency': 'INR',
-                'receipt': job_id,
+                'receipt': job_id[:40],          # Razorpay receipt max 40 chars
                 'notes': {
                     'job_id': job_id,
-                    'customer': job['customer_name'],
+                    'customer': job['customer_name'] or '',
                     'invoice': job['invoice_number'] or '',
                 }
             })
+            # Generate a new secure token every time link is (re-)created
             token = uuid.uuid4().hex
             pay_link = url_for('customer_pay', job_id=job_id, token=token, _external=True)
+            # ✅ Save BOTH razorpay_order_id AND payment_token so the payment page works
             db.execute("""
-                UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=? WHERE job_id=?
+                UPDATE jobs
+                SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
+                WHERE job_id=?
             """, (order['id'], token, pay_link, now, job_id))
-            log_action(db, job_id, 'Payment Notification Sent', session['user_id'],
-                       f'Razorpay Order: {order["id"]}, Amount: ₹{amount_paise/100}')
-            flash(f'Payment link created! Share this with the customer: {pay_link}', 'success')
+            db.commit()
+            log_action(db, job_id, 'Payment Link Generated', session['user_id'],
+                       f'Razorpay Order: {order["id"]}, Amount: ₹{amount_paise / 100:.2f}')
+            flash(f'✅ Payment link ready! Share with customer: {pay_link}', 'success')
         except Exception as e:
             flash(f'Razorpay error: {str(e)}', 'error')
         return redirect(url_for('admin_job_detail', job_id=job_id))
@@ -705,38 +716,36 @@ def tech_update_job(job_id):
             flash('Access denied', 'error')
             return redirect(url_for('tech_jobs'))
 
-    # ── STEP: Inspection completed → opens estimate dialog → sends estimate ──
     if action == 'complete_inspection':
-        # Technician marks inspection done (repairable), status moves to inspection_completed
-        findings = request.form.get('inspection_findings', '')
-        db.execute("""
-            UPDATE jobs SET status='inspection_completed', inspection_findings=?, updated_at=? WHERE job_id=?
-        """, (findings, now, job_id))
+        findings = request.form.get('inspection_findings')
+        db.execute("UPDATE jobs SET status='inspection_completed', inspection_findings=?, updated_at=? WHERE job_id=?",
+                   (findings, now, job_id))
         log_action(db, job_id, 'Inspection Completed', tech_id, findings)
 
     elif action == 'not_repairable':
-        reason = request.form.get('not_repairable_reason', '')
-        findings = request.form.get('inspection_findings', '')
-        db.execute("""
-            UPDATE jobs SET status='not_repairable', inspection_findings=?,
-            not_repairable_reason=?, updated_at=? WHERE job_id=?
-        """, (findings, reason, now, job_id))
+        findings = request.form.get('inspection_findings')
+        reason = request.form.get('not_repairable_reason')
+        db.execute("UPDATE jobs SET status='not_repairable', inspection_findings=?, not_repairable_reason=?, updated_at=? WHERE job_id=?",
+                   (findings, reason, now, job_id))
         log_action(db, job_id, 'Device Not Repairable', tech_id, reason)
 
     elif action == 'send_estimate':
-        # Technician sends estimate → status = estimate_sent
         estimate_amount = float(request.form.get('estimate_amount', 0))
         estimate_notes = request.form.get('estimate_notes', '')
         db.execute("""
             UPDATE jobs SET status='estimate_sent', estimate_amount=?,
             estimate_notes=?, estimate_sent_at=?, updated_at=? WHERE job_id=?
         """, (estimate_amount, estimate_notes, now, now, job_id))
-        log_action(db, job_id, f'Estimate Sent: ₹{estimate_amount}', tech_id, estimate_notes)
+        log_action(db, job_id, f'Estimate Generated: ₹{estimate_amount}', tech_id, estimate_notes)
 
     elif action == 'start_repair':
-        # Only allowed when estimate_approved
         db.execute("UPDATE jobs SET status='in_repair', updated_at=? WHERE job_id=?", (now, job_id))
         log_action(db, job_id, 'Repair Started', tech_id)
+
+    elif action == 'update_progress':
+        notes = request.form.get('notes')
+        db.execute("UPDATE jobs SET notes=?, updated_at=? WHERE job_id=?", (notes, now, job_id))
+        log_action(db, job_id, 'Progress Updated', tech_id, notes)
 
     elif action == 'repair_complete':
         findings = request.form.get('repair_findings')
@@ -748,11 +757,6 @@ def tech_update_job(job_id):
             labour_cost=?, total_amount=?, updated_at=? WHERE job_id=?
         """, (findings, parts, labour, total, now, job_id))
         log_action(db, job_id, 'Repair Completed', tech_id, f'Findings: {findings}, Total: ₹{total}')
-
-    elif action == 'update_progress':
-        notes = request.form.get('notes')
-        db.execute("UPDATE jobs SET notes=?, updated_at=? WHERE job_id=?", (notes, now, job_id))
-        log_action(db, job_id, 'Progress Updated', tech_id, notes)
 
     elif action == 'add_photo':
         photos = request.files.getlist('photos')
@@ -810,10 +814,19 @@ def customer_pay(job_id, token):
         "SELECT * FROM jobs WHERE job_id=? AND payment_token=?", (job_id, token)
     ).fetchone()
     if not job:
-        return "Invalid or expired payment link.", 404
+        return render_template('shared/payment_error.html',
+                               message="This payment link is invalid or has expired. "
+                                       "Please contact Maktronics for a new link."), 404
     if job['payment_status'] == 'paid':
         return render_template('shared/payment_success.html', job=job, already_paid=True)
+    if not job['razorpay_order_id']:
+        return render_template('shared/payment_error.html',
+                               message="Payment order not found. "
+                                       "Please ask Maktronics to regenerate your payment link."), 400
     amount = float(job['invoice_total_amount'] or job['total_amount'] or 0)
+    if amount <= 0:
+        return render_template('shared/payment_error.html',
+                               message="Invoice amount is zero. Please contact Maktronics."), 400
     return render_template(
         'shared/customer_payment.html',
         job=job,
@@ -831,13 +844,27 @@ def verify_payment(job_id):
     razorpay_payment_id = data.get('razorpay_payment_id', '')
     razorpay_signature  = data.get('razorpay_signature', '')
 
+    if not razorpay_order_id or not razorpay_payment_id or not razorpay_signature:
+        return jsonify({'status': 'error', 'message': 'Missing payment fields'}), 400
+
+    # Verify the job exists and order_id matches
+    job = db.execute("SELECT * FROM jobs WHERE job_id=? AND razorpay_order_id=?",
+                     (job_id, razorpay_order_id)).fetchone()
+    if not job:
+        return jsonify({'status': 'error', 'message': 'Order not found for this job'}), 400
+
+    # Already paid? Return success redirect (idempotent)
+    if job['payment_status'] == 'paid':
+        return jsonify({'status': 'success', 'redirect': url_for('payment_success', job_id=job_id)})
+
+    # Verify Razorpay HMAC signature
     body = f"{razorpay_order_id}|{razorpay_payment_id}".encode()
     expected_sig = hmac.new(
         RAZORPAY_KEY_SECRET.encode(), body, hashlib.sha256
     ).hexdigest()
 
     if not hmac.compare_digest(expected_sig, razorpay_signature):
-        return jsonify({'status': 'error', 'message': 'Signature mismatch'}), 400
+        return jsonify({'status': 'error', 'message': 'Signature verification failed'}), 400
 
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     db.execute("""
@@ -865,6 +892,48 @@ def payment_success(job_id):
     if not job:
         return "Job not found.", 404
     return render_template('shared/payment_success.html', job=job, already_paid=False)
+
+
+@app.route('/admin/jobs/<job_id>/regenerate-payment-link', methods=['POST'])
+@admin_required
+def regenerate_payment_link(job_id):
+    """Utility: regenerate a fresh Razorpay order + token for any job."""
+    db = get_db()
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not job:
+        flash('Job not found.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    amount_paise = int(float(job['invoice_total_amount'] or job['total_amount'] or 0) * 100)
+    if amount_paise <= 0:
+        flash('Cannot generate payment link: invoice amount is zero.', 'error')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        order = razorpay_client.order.create({
+            'amount': amount_paise,
+            'currency': 'INR',
+            'receipt': job_id[:40],
+            'notes': {
+                'job_id': job_id,
+                'customer': job['customer_name'] or '',
+                'invoice': job['invoice_number'] or '',
+            }
+        })
+        token = uuid.uuid4().hex
+        pay_link = url_for('customer_pay', job_id=job_id, token=token, _external=True)
+        db.execute("""
+            UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
+            WHERE job_id=?
+        """, (order['id'], token, pay_link, now, job_id))
+        db.commit()
+        log_action(db, job_id, 'Payment Link Regenerated', session['user_id'],
+                   f'New Order: {order["id"]}, Amount: ₹{amount_paise / 100:.2f}')
+        flash(f'✅ New payment link: {pay_link}', 'success')
+    except Exception as e:
+        flash(f'Razorpay error: {str(e)}', 'error')
+    return redirect(url_for('admin_job_detail', job_id=job_id))
 
 
 @app.route('/razorpay/webhook', methods=['POST'])
