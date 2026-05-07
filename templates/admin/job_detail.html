@@ -1,0 +1,724 @@
+{% extends 'shared/base.html' %}
+{% block title %}{{ job.job_id }} — Maktronics{% endblock %}
+{% block page_title %}{{ job.job_id }}{% endblock %}
+{% block page_sub %}{{ job.customer_name }} · {{ job.item_type }}{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Management</div>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+</div>
+{% endblock %}
+
+{% block bn_jobs %}active{% endblock %}
+
+{% block topbar_actions %}
+{% if job.invoice_number %}
+<a href="/admin/jobs/{{ job.job_id }}/invoice" target="_blank" class="btn btn-secondary btn-sm">📄 Invoice</a>
+{% endif %}
+{% endblock %}
+
+{% block mobile_actions %}
+<div class="mobile-action-bar">
+  <a href="/admin/jobs" class="btn btn-secondary">← All Jobs</a>
+  {% if job.invoice_number %}
+  <a href="/admin/jobs/{{ job.job_id }}/invoice" target="_blank" class="btn btn-secondary">📄 Invoice</a>
+  {% endif %}
+  <button onclick="printBarcode()" class="btn btn-secondary">🏷️ Print</button>
+</div>
+{% endblock %}
+
+{% block head_styles %}
+<style>
+  /* =============================================
+     JOB DETAIL SPECIFIC STYLES (mobile fixed)
+  ============================================= */
+  
+  /* Main container - grid layout for desktop, single column for mobile */
+  .job-detail-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  
+  /* Force cards to be consistent */
+  .job-detail-container .card {
+    height: auto;
+    overflow: visible;
+  }
+  
+  /* Photo grid responsive */
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+  }
+  
+  .photo-thumb {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    transition: all 0.2s;
+    cursor: zoom-in;
+  }
+  
+  .photo-thumb:hover {
+    transform: scale(1.02);
+    border-color: var(--accent);
+  }
+  
+  /* Barcode container ensures no overflow on small screens */
+  #barcode-card {
+    overflow-x: auto;
+  }
+  
+  #barcode-svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+  
+  /* Action buttons in desktop panel */
+  .action-card-desktop .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  /* Make actions always accessible on mobile via sticky panel */
+  @media (max-width: 768px) {
+    .job-detail-container {
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    
+    .job-detail-container > div {
+      width: 100%;
+    }
+    
+    /* Mobile sticky actions panel */
+    .actions-sticky-mobile {
+      position: sticky;
+      bottom: var(--bottom-nav-h, 64px);
+      z-index: 80;
+      margin: 0 -12px;
+      padding: 12px 12px;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    
+    .actions-sticky-mobile .btn {
+      flex: 1;
+      min-width: 120px;
+      justify-content: center;
+      font-size: 12px;
+      padding: 10px 8px;
+    }
+    
+    .action-card-desktop {
+      display: none !important;
+    }
+    
+    /* Improve table readability on small screens */
+    .card td {
+      word-break: break-word;
+      white-space: normal;
+    }
+    
+    /* Assign technician form on mobile */
+    .card form {
+      flex-direction: column;
+    }
+    
+    .card form select,
+    .card form button {
+      width: 100%;
+    }
+    
+    /* Photo grid more compact */
+    .photo-grid {
+      grid-template-columns: repeat(auto-fill, minmax(75px, 1fr));
+      gap: 8px;
+    }
+    
+    /* Technician info area */
+    .tech-assign-area {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+  
+  @media (min-width: 769px) {
+    .actions-sticky-mobile {
+      display: none;
+    }
+  }
+  
+  /* Extra small devices (<=480px) */
+  @media (max-width: 480px) {
+    .photo-grid {
+      grid-template-columns: repeat(auto-fill, minmax(65px, 1fr));
+    }
+    
+    .stat-value {
+      font-size: 20px;
+    }
+    
+    .card-title {
+      font-size: 13px;
+    }
+    
+    .badge {
+      font-size: 10px;
+      padding: 2px 7px;
+    }
+  }
+  
+  /* Timeline improvements */
+  .timeline {
+    max-height: 380px;
+    overflow-y: auto;
+    padding-right: 8px;
+  }
+  
+  .timeline-content {
+    font-size: 13px;
+  }
+  
+  .timeline-meta {
+    font-size: 11px;
+  }
+  
+  @media (max-width: 768px) {
+    .timeline {
+      max-height: 300px;
+    }
+    .timeline-content {
+      font-size: 12px;
+    }
+    .timeline-meta {
+      font-size: 10px;
+    }
+  }
+  
+  /* Print styles for barcode sticker */
+  @media print {
+    @page {
+      size: 3in 1.5in;
+      margin: 0;
+    }
+    body * {
+      visibility: hidden !important;
+    }
+    #barcode-print-area,
+    #barcode-print-area * {
+      visibility: visible !important;
+    }
+    #barcode-print-area {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 3in !important;
+      height: 1.5in !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #fff !important;
+      padding: 4px 8px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- PROGRESS TRACKER -->
+{% set all_steps = ['received','barcode_gen','sent_for_inspection','inspection_completed','in_repair','repair_done','invoice_uploaded','payment_received','dispatched','delivered','closed'] %}
+{% set step_idx = all_steps.index(job.status) if job.status in all_steps else 0 %}
+<div class="card mb-6" style="overflow:hidden">
+  <div class="card-header" style="flex-wrap:wrap;gap:8px">
+    <span class="card-title">🗺️ Repair Journey</span>
+    {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+    <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+  </div>
+  <div class="progress-track">
+    {% for step in all_steps %}
+    {% set si = loop.index0 %}
+    {% if not loop.first %}
+    <div class="step-line {% if si <= step_idx %}done{% endif %}"></div>
+    {% endif %}
+    <div class="progress-step">
+      <div class="step-dot {% if si < step_idx %}done{% elif si == step_idx %}current{% endif %}" title="{{ status_flow.get(step,{}).get('label',step) }}">
+        {% if si < step_idx %}✓{% else %}{{ status_flow.get(step,{}).get('icon','•') }}{% endif %}
+        <span class="step-label">{{ status_flow.get(step,{}).get('label',step) }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- MAIN GRID (desktop: 2 columns, mobile: auto-stack) -->
+<div class="job-detail-container">
+
+  <!-- LEFT COLUMN -->
+  <div>
+    <!-- Customer Info -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">👤 Customer</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Name</td><td style="padding:6px 0;font-weight:500">{{ job.customer_name or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Phone</td>
+          <td style="padding:6px 0">
+            <a href="tel:{{ job.customer_phone }}" style="color:var(--blue)">{{ job.customer_phone or '—' }}</a>
+          </td>
+         </tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Email</td><td style="padding:6px 0">{{ job.customer_email or '—' }}</td></tr>
+       </table>
+    </div>
+
+    <!-- Item Info -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">📦 Item</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Type</td><td style="padding:6px 0;font-weight:500">{{ job.item_type or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Job ID</td><td style="padding:6px 0"><code style="font-size:11px;color:var(--accent)">{{ job.job_id }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Problem</td><td style="padding:6px 0">{{ job.item_description or '—' }}</td></tr>
+        {% if job.notes %}<tr><td style="padding:6px 0;color:var(--muted)">Notes</td><td style="padding:6px 0">{{ job.notes }}</td></tr>{% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Received</td><td style="padding:6px 0;font-size:11px;color:var(--muted)">{{ job.received_at[:16] }}</td></tr>
+      </table>
+    </div>
+
+    <!-- Barcode -->
+    <div class="card mb-4" id="barcode-card">
+      <div class="card-header">
+        <span class="card-title">🏷️ Barcode</span>
+        <button onclick="printBarcode()" class="btn btn-secondary btn-sm">
+          🖨️ Print
+        </button>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;padding:12px 4px 4px;gap:6px;overflow:hidden;width:100%">
+        <div style="width:100%;overflow:hidden;display:flex;justify-content:center">
+          <svg id="barcode-svg" style="max-width:100%;height:auto;display:block"></svg>
+        </div>
+        <div style="font-size:10px;color:var(--muted);text-align:center;word-break:break-all;padding:0 4px">
+          {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Technician Assignment -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">👷 Technician</span></div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:12px">{{ job.tech_name or 'Not Assigned' }}</div>
+      <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="hidden" name="action" value="assign_tech">
+        <select name="tech_id" class="form-control" style="flex:1;min-width:0">
+          {% for tech in technicians %}
+          <option value="{{ tech.id }}" {% if job.assigned_tech_id == tech.id %}selected{% endif %}>{{ tech.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-blue btn-sm">Assign</button>
+      </form>
+    </div>
+
+    <!-- Photos -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <span class="card-title">📸 Photos</span>
+        <span class="tag">{{ photos|length }}</span>
+      </div>
+      {% if photos %}
+      <div class="photo-grid">
+        {% for p in photos %}
+        <img src="/static/uploads/{{ p.photo_path }}" class="photo-thumb" onclick="window.open(this.src)" loading="lazy" alt="Job photo">
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No photos uploaded</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN -->
+  <div>
+    <!-- Financial -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">💰 Finance</span></div>
+      {% if job.repair_findings or job.total_amount > 0 %}
+      <table style="font-size:13px;width:100%">
+        {% if job.repair_findings %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Findings</td><td style="padding:6px 0">{{ job.repair_findings }}</td></tr>
+        {% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Parts</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.parts_cost or 0) }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Labour</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.labour_cost or 0) }}</td></tr>
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:10px 0;color:var(--text);font-weight:700">Total</td>
+          <td style="padding:10px 0;color:var(--green);font-weight:700;font-size:16px">₹{{ "%.2f"|format(job.total_amount or 0) }}</td>
+        </tr>
+        {% if job.invoice_number %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Invoice #</td><td style="padding:6px 0"><code style="font-size:11px;color:var(--accent)">{{ job.invoice_number }}</code></td></tr>
+        {% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Payment</td>
+          <td style="padding:6px 0">
+            {% if job.payment_status == 'paid' %}
+            <span class="badge badge-delivered">✅ Paid</span>
+            {% else %}
+            <span class="badge badge-payment_pending">⏳ {{ job.payment_status|replace('_',' ')|title or 'Pending' }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">Repair not yet completed</div>
+      {% endif %}
+    </div>
+
+    <!-- Dispatch -->
+    {% if job.tracking_number %}
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">🚚 Dispatch</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:100px">Tracking #</td><td style="padding:6px 0"><code style="color:var(--accent)">{{ job.tracking_number }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Date</td><td style="padding:6px 0">{{ job.dispatch_date or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Expected</td><td style="padding:6px 0">{{ job.expected_delivery or '—' }}</td></tr>
+        {% if job.delivered_at %}<tr><td style="padding:6px 0;color:var(--muted)">Delivered</td><td style="padding:6px 0;color:var(--green)">{{ job.delivered_at[:16] }}</td></tr>{% endif %}
+      </table>
+    </div>
+    {% endif %}
+
+    <!-- ACTIONS PANEL (desktop only) -->
+    <div class="card mb-4 action-card-desktop">
+      <div class="card-header"><span class="card-title">⚡ Actions</span></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+
+        {# ── ADMIN: Job received → Send for Inspection ── #}
+        {% if job.status == 'received' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="send_for_inspection">
+          <button type="submit" class="btn btn-primary" style="width:100%">🔍 Send for Inspection</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: estimate_sent → Approve or Reject ── #}
+        {% if job.status == 'estimate_sent' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="approve_estimate">
+          <button type="submit" class="btn btn-success" style="width:100%">👍 Approve Estimate</button>
+        </form>
+        <button onclick="openModal('rejectEstimateModal')" class="btn btn-danger" style="width:100%">🚫 Reject Estimate</button>
+        {% endif %}
+
+        {# ── ADMIN: estimate_approved → Send for Repair (just signals tech) ── #}
+        {% if job.status == 'estimate_approved' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="start_repair">
+          <button type="submit" class="btn btn-primary" style="width:100%">🔧 Send for Repair</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: repair_done → Upload Invoice ── #}
+        {% if job.status == 'repair_done' %}
+        <button onclick="openModal('uploadInvoiceModal')" class="btn btn-success" style="width:100%">📎 Upload Invoice</button>
+        {% endif %}
+
+        {# ── ADMIN: invoice_uploaded → Send Payment Notification ── #}
+        {% if job.status == 'invoice_uploaded' and job.payment_status != 'paid' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="send_payment_notification">
+          <button type="submit" class="btn btn-blue" style="width:100%">💳 Send Payment Link</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: payment_received → Dispatch ── #}
+        {% if job.status == 'payment_received' %}
+        <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="width:100%">🚚 Dispatch Item</button>
+        {% endif %}
+
+        {# ── ADMIN: dispatched → Delivered ── #}
+        {% if job.status == 'dispatched' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="delivered">
+          <button type="submit" class="btn btn-success" style="width:100%">🏠 Mark Delivered</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: delivered → Close ── #}
+        {% if job.status == 'delivered' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="close">
+          <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
+        </form>
+        {% endif %}
+
+        {# ── Show payment link if already generated ── #}
+        {% if job.payment_link %}
+        <div style="background:var(--bg3);border-radius:8px;padding:10px;font-size:11px;word-break:break-all;color:var(--blue)">
+          🔗 <strong>Payment Link:</strong><br>{{ job.payment_link }}
+        </div>
+        {% endif %}
+
+      </div>
+    </div>
+
+    <!-- ACTIVITY LOG -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">📜 Activity Log</span></div>
+      {% if logs %}
+      <div class="timeline">
+        {% for log in logs %}
+        <div class="timeline-item">
+          <div class="timeline-meta">{{ log.user_name or 'System' }} · {{ log.created_at[:16] }}</div>
+          <div class="timeline-content">{{ log.action }}</div>
+          {% if log.details %}<div class="timeline-details">{{ log.details }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No activity yet</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- MOBILE STICKY ACTIONS PANEL -->
+<div class="actions-sticky-mobile">
+  {% if job.status == 'received' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="send_for_inspection">
+    <button type="submit" class="btn btn-primary" style="width:100%">🔍 Send for Inspection</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'estimate_sent' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="approve_estimate">
+    <button type="submit" class="btn btn-success" style="width:100%">👍 Approve</button>
+  </form>
+  <button onclick="openModal('rejectEstimateModal')" class="btn btn-danger" style="flex:1">🚫 Reject</button>
+  {% endif %}
+
+  {% if job.status == 'estimate_approved' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="start_repair">
+    <button type="submit" class="btn btn-primary" style="width:100%">🔧 Send for Repair</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'repair_done' %}
+  <button onclick="openModal('uploadInvoiceModal')" class="btn btn-success" style="flex:1">📎 Upload Invoice</button>
+  {% endif %}
+
+  {% if job.status == 'invoice_uploaded' and job.payment_status != 'paid' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="send_payment_notification">
+    <button type="submit" class="btn btn-blue" style="width:100%">💳 Send Payment Link</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'payment_received' %}
+  <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="flex:1">🚚 Dispatch</button>
+  {% endif %}
+
+  {% if job.status == 'dispatched' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="delivered">
+    <button type="submit" class="btn btn-success" style="width:100%">🏠 Delivered</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'delivered' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="close">
+    <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
+  </form>
+  {% endif %}
+</div>
+
+<!-- MODALS -->
+
+<!-- Upload Invoice Modal (admin, after repair_done) -->
+<div class="modal-overlay" id="uploadInvoiceModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">📎 Upload Invoice</div>
+      <button class="modal-close" onclick="closeModal('uploadInvoiceModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="upload_invoice">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Invoice Number *</label>
+          <input type="text" name="invoice_number" class="form-control" placeholder="e.g. INV-2024-001" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Invoice Total Amount (₹) *</label>
+          <input type="number" step="0.01" name="invoice_total_amount" class="form-control" placeholder="0.00" required inputmode="decimal">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Invoice Date</label>
+          <input type="date" name="invoice_generate_date" class="form-control" id="inv-date">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Invoice File (PDF/Image) *</label>
+          <input type="file" name="invoice_file" class="form-control" accept=".pdf,.jpg,.jpeg,.png" required>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('uploadInvoiceModal')">Cancel</button>
+        <button type="submit" class="btn btn-success">Upload &amp; Proceed</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Reject Estimate Modal (admin) -->
+<div class="modal-overlay" id="rejectEstimateModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🚫 Reject Estimate</div>
+      <button class="modal-close" onclick="closeModal('rejectEstimateModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="reject_estimate">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Reason for Rejection</label>
+          <textarea name="rejection_reason" class="form-control" rows="3" placeholder="Why is the estimate being rejected?"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('rejectEstimateModal')">Cancel</button>
+        <button type="submit" class="btn btn-danger">Reject Estimate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Dispatch Modal -->
+<div class="modal-overlay" id="dispatchModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🚚 Dispatch Item</div>
+      <button class="modal-close" onclick="closeModal('dispatchModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="dispatch">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Courier Name</label>
+          <input type="text" name="courier_name" class="form-control" placeholder="e.g. Delhivery, BlueDart...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tracking Number *</label>
+          <input type="text" name="tracking_number" class="form-control" placeholder="Enter courier tracking number" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Dispatch Date</label>
+            <input type="date" name="dispatch_date" class="form-control" id="dispatch-date">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Expected Delivery</label>
+            <input type="date" name="expected_delivery" class="form-control">
+          </div>
+        </div>
+        <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
+          📱 Customer will receive a WhatsApp notification with tracking details
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('dispatchModal')">Cancel</button>
+        <button type="submit" class="btn btn-blue">Dispatch &amp; Notify</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Hidden barcode print area -->
+<div id="barcode-print-area" style="display:none">
+  <div style="font-family:monospace;font-size:8pt;font-weight:700;letter-spacing:0.5px;margin-bottom:3px;text-align:center;color:#000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.job_id }}</div>
+  <svg id="barcode-print-svg" style="display:block;max-width:2.9in"></svg>
+  <div style="margin-top:3px;font-size:7pt;text-align:center;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.customer_name }} · {{ job.item_type }}</div>
+  <div style="margin-top:2px;font-size:6.5pt;text-align:center;color:#555">{{ job.received_at[:10] }}</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var today = new Date().toISOString().split('T')[0];
+  var dispatchDate = document.getElementById('dispatch-date');
+  var invDate = document.getElementById('inv-date');
+  if (dispatchDate && !dispatchDate.value) dispatchDate.value = today;
+  if (invDate && !invDate.value) invDate.value = today;
+  
+  // Generate barcode
+  var barcodeVal = "{{ job.job_id }}";
+  var containerW = document.getElementById('barcode-card').offsetWidth - 40;
+  var barW = Math.min(2, Math.max(1, containerW / 120));
+  var opts = {
+    format: "CODE128",
+    width: barW,
+    height: 60,
+    displayValue: true,
+    fontSize: 11,
+    margin: 6,
+    background: "transparent",
+    lineColor: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#E8EBF4'
+  };
+  
+  try {
+    JsBarcode("#barcode-svg", barcodeVal, opts);
+  } catch(e) {
+    var el = document.getElementById('barcode-svg');
+    if (el) el.parentElement.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Could not generate barcode</div>';
+  }
+  
+  try {
+    JsBarcode("#barcode-print-svg", barcodeVal, {
+      format: "CODE128",
+      width: 1.5,
+      height: 50,
+      displayValue: true,
+      fontSize: 9,
+      margin: 2,
+      background: "#ffffff",
+      lineColor: "#000000"
+    });
+  } catch(e) {}
+  
+  window.onThemeChange = function(theme) {
+    var newColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || (theme === 'dark' ? '#E8EBF4' : '#1A1D2E');
+    try {
+      JsBarcode("#barcode-svg", barcodeVal, Object.assign({}, opts, { lineColor: newColor }));
+    } catch(e) {}
+  };
+});
+
+function printBarcode() {
+  var area = document.getElementById('barcode-print-area');
+  area.style.display = 'flex';
+  area.style.flexDirection = 'column';
+  area.style.alignItems = 'center';
+  area.style.justifyContent = 'center';
+  window.print();
+  setTimeout(function() { area.style.display = 'none'; }, 500);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,281 @@
+{% extends 'shared/base.html' %}
+{% block title %}Users — Maktronics{% endblock %}
+{% block page_title %}Users{% endblock %}
+{% block page_sub %}Admins, Managers &amp; Technicians{% endblock %}
+
+{% block head_styles %}
+.perm-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.perm-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .2s;user-select:none}
+.perm-item:hover{border-color:var(--accent)}
+.perm-item input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;cursor:pointer;flex-shrink:0;pointer-events:none}
+.perm-item.checked{background:rgba(255,107,43,.07);border-color:rgba(255,107,43,.35)}
+.perm-label{font-size:12px;font-weight:500;color:var(--text)}
+.role-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;letter-spacing:.5px}
+.role-admin{background:rgba(255,107,43,.12);color:var(--accent);border:1px solid rgba(255,107,43,.25)}
+.role-manager{background:rgba(74,158,255,.12);color:var(--blue);border:1px solid rgba(74,158,255,.25)}
+.role-tech{background:rgba(78,182,172,.12);color:#4DB6AC;border:1px solid rgba(78,182,172,.25)}
+.perms-row td{padding:0!important}
+.perms-panel{padding:16px 18px 18px;border-top:1px dashed var(--border);background:var(--bg2)}
+.toggle-perms{background:none;border:1px solid var(--border);color:var(--muted);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;font-family:var(--font-body);transition:all .2s}
+.toggle-perms:hover{border-color:var(--blue);color:var(--blue)}
+
+/* User cards (mobile) */
+.user-card-list{display:none;flex-direction:column;gap:10px}
+.user-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+.user-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px}
+.user-card-name{font-size:15px;font-weight:600;color:var(--text)}
+.user-card-username{font-family:monospace;font-size:12px;color:var(--muted);margin-top:2px}
+.user-card-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+@media(max-width:640px){
+  .table-wrap{display:none!important}
+  .user-card-list{display:flex}
+  .perm-grid{grid-template-columns:1fr}
+}
+{% endblock %}
+
+{% block nav %}
+<a href="/admin/jobs/new" class="btn btn-primary" style="display:flex;margin:0 8px 12px;justify-content:center;font-size:13px">➕ New Job</a>
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Management</div>
+  <a href="/admin/users" class="nav-item active"><span class="icon">👥</span> Users</a>
+</div>
+{% endblock %}
+
+{% block bn_users %}active{% endblock %}
+
+{% block topbar_actions %}
+<button onclick="openModal('addUserModal')" class="btn btn-primary btn-sm">➕ Add User</button>
+{% endblock %}
+
+{% block mobile_actions %}
+<div class="mobile-action-bar">
+  <button onclick="openModal('addUserModal')" class="btn btn-primary">➕ Add New User</button>
+</div>
+{% endblock %}
+
+{% block content %}
+<!-- TABLE (tablet/desktop) -->
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Username</th>
+        <th>Role</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td style="font-weight:500">{{ user.name }}</td>
+        <td><code style="font-size:12px">{{ user.username }}</code></td>
+        <td>
+          {% if user.role == 'admin' %}<span class="role-pill role-admin">🔑 Admin</span>
+          {% elif user.role == 'manager' %}<span class="role-pill role-manager">🛡️ Manager</span>
+          {% else %}<span class="role-pill role-tech">🔧 Technician</span>{% endif %}
+        </td>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap">{{ user.created_at[:10] }}</td>
+        <td>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            {% if user.role == 'manager' %}
+            <button class="toggle-perms" onclick="togglePerms({{ user.id }})">🔐 Permissions</button>
+            {% endif %}
+            {% if user.id != session.user_id %}
+            <form method="POST" action="/admin/users/delete/{{ user.id }}" style="display:inline"
+                  onsubmit="return confirm('Delete {{ user.name }}?')">
+              <button type="submit" class="btn btn-danger btn-xs">🗑 Delete</button>
+            </form>
+            {% else %}
+            <span class="tag" style="font-size:11px;color:var(--green)">● You</span>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% if user.role == 'manager' %}
+      <tr class="perms-row" id="perms-row-{{ user.id }}" style="display:none">
+        <td colspan="5">
+          <div class="perms-panel">
+            <div style="font-size:11px;font-weight:700;color:var(--blue);margin-bottom:2px;text-transform:uppercase;letter-spacing:1px">🔐 Permissions — {{ user.name }}</div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Toggle what this manager can access.</div>
+            <form method="POST" action="/admin/users/permissions/{{ user.id }}">
+              <div class="perm-grid">
+                {% for perm_key, perm_label in all_permissions.items() %}
+                {% set is_checked = user.perms.get(perm_key, False) %}
+                <label class="perm-item {% if is_checked %}checked{% endif %}" id="pi-{{ user.id }}-{{ perm_key }}">
+                  <input type="checkbox" name="{{ perm_key }}" {% if is_checked %}checked{% endif %}>
+                  <span class="perm-label">{{ perm_label }}</span>
+                </label>
+                {% endfor %}
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+                <button type="submit" class="btn btn-primary" style="font-size:12px;padding:7px 14px">💾 Save</button>
+                <button type="button" class="btn btn-secondary" style="font-size:12px;padding:7px 12px" onclick="setAll({{ user.id }}, true)">✅ All</button>
+                <button type="button" class="btn btn-secondary" style="font-size:12px;padding:7px 12px" onclick="setAll({{ user.id }}, false)">❌ None</button>
+              </div>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- MOBILE CARD LIST -->
+<div class="user-card-list">
+  {% for user in users %}
+  <div class="user-card">
+    <div class="user-card-top">
+      <div>
+        <div class="user-card-name">{{ user.name }}</div>
+        <div class="user-card-username">@{{ user.username }}</div>
+        <div style="margin-top:6px">
+          {% if user.role == 'admin' %}<span class="role-pill role-admin">🔑 Admin</span>
+          {% elif user.role == 'manager' %}<span class="role-pill role-manager">🛡️ Manager</span>
+          {% else %}<span class="role-pill role-tech">🔧 Technician</span>{% endif %}
+        </div>
+      </div>
+      {% if user.id == session.user_id %}
+      <span class="tag" style="color:var(--green);font-size:11px">● You</span>
+      {% endif %}
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Joined {{ user.created_at[:10] }}</div>
+    <div class="user-card-actions">
+      {% if user.role == 'manager' %}
+      <button class="toggle-perms" onclick="togglePerms({{ user.id }})" style="padding:7px 12px">🔐 Permissions</button>
+      {% endif %}
+      {% if user.id != session.user_id %}
+      <form method="POST" action="/admin/users/delete/{{ user.id }}" style="display:inline"
+            onsubmit="return confirm('Delete {{ user.name }}?')">
+        <button type="submit" class="btn btn-danger btn-xs">🗑 Delete</button>
+      </form>
+      {% endif %}
+    </div>
+    {% if user.role == 'manager' %}
+    <div id="perms-row-{{ user.id }}" style="display:none;margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
+      <div style="font-size:11px;font-weight:700;color:var(--blue);margin-bottom:10px;text-transform:uppercase;letter-spacing:1px">🔐 Permissions</div>
+      <form method="POST" action="/admin/users/permissions/{{ user.id }}">
+        <div class="perm-grid">
+          {% for perm_key, perm_label in all_permissions.items() %}
+          {% set is_checked = user.perms.get(perm_key, False) %}
+          <label class="perm-item {% if is_checked %}checked{% endif %}">
+            <input type="checkbox" name="{{ perm_key }}" {% if is_checked %}checked{% endif %}>
+            <span class="perm-label">{{ perm_label }}</span>
+          </label>
+          {% endfor %}
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button type="submit" class="btn btn-primary btn-sm">💾 Save</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setAll({{ user.id }}, true)">✅ All</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="setAll({{ user.id }}, false)">❌ None</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-overlay" id="addUserModal">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header">
+      <div class="modal-title">➕ Add New User</div>
+      <button class="modal-close" onclick="closeModal('addUserModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/users/add">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Full Name *</label>
+            <input type="text" name="name" class="form-control" placeholder="Full name" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Username *</label>
+            <input type="text" name="username" class="form-control" placeholder="Login username" required autocomplete="off">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Role *</label>
+            <select name="role" class="form-control" required onchange="toggleModalPerms(this.value)">
+              <option value="technician">🔧 Technician</option>
+              <option value="manager">🛡️ Manager</option>
+              <option value="admin">🔑 Admin</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password *</label>
+            <input type="password" name="password" class="form-control" placeholder="Password" required autocomplete="new-password">
+          </div>
+        </div>
+        <div id="modal-perms" style="display:none;margin-top:4px">
+          <div style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">🔐 Initial Permissions</div>
+          <div class="perm-grid" id="modal-perm-grid">
+            {% for perm_key, perm_label in all_permissions.items() %}
+            <label class="perm-item" id="mpi-{{ perm_key }}">
+              <input type="checkbox" name="{{ perm_key }}">
+              <span class="perm-label">{{ perm_label }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="modalSetAll(true)">✅ All</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="modalSetAll(false)">❌ None</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addUserModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create User</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function togglePerms(userId) {
+  const row = document.getElementById('perms-row-' + userId);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+document.querySelectorAll('.perm-item').forEach(label => {
+  label.addEventListener('click', function() {
+    const cb = label.querySelector('input[type=checkbox]');
+    if (!cb) return;
+    setTimeout(() => label.classList.toggle('checked', cb.checked), 0);
+  });
+});
+
+function setAll(userId, state) {
+  const row = document.getElementById('perms-row-' + userId);
+  if (!row) return;
+  row.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.checked = state;
+    cb.closest('.perm-item').classList.toggle('checked', state);
+  });
+}
+
+function toggleModalPerms(role) {
+  document.getElementById('modal-perms').style.display = role === 'manager' ? '' : 'none';
+}
+function modalSetAll(state) {
+  document.querySelectorAll('#modal-perm-grid input[type=checkbox]').forEach(cb => {
+    cb.checked = state;
+    cb.closest('.perm-item').classList.toggle('checked', state);
+  });
+}
+</script>
+{% endblock %}

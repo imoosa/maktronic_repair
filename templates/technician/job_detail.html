@@ -1,0 +1,440 @@
+{% extends 'shared/base.html' %}
+{% block title %}{{ job.job_id }} — Technician{% endblock %}
+{% block page_title %}{{ job.job_id }}{% endblock %}
+{% block page_sub %}{{ job.customer_name }} · {{ job.item_type }}{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/tech" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/tech/jobs" class="nav-item active"><span class="icon">🔧</span> My Jobs</a>
+</div>
+{% endblock %}
+
+{% block head_styles %}
+<style>
+  .job-detail-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 768px) {
+    .job-detail-container { grid-template-columns: 1fr; }
+    .action-card-desktop { display: none !important; }
+    .actions-sticky-mobile { display: flex !important; }
+  }
+  @media (min-width: 769px) {
+    .actions-sticky-mobile { display: none !important; }
+  }
+  .actions-sticky-mobile {
+    position: sticky;
+    bottom: var(--bottom-nav-h, 64px);
+    z-index: 80;
+    margin: 0 -12px;
+    padding: 12px;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .actions-sticky-mobile .btn { flex:1; min-width:120px; justify-content:center; font-size:12px; padding:10px 8px; }
+  .timeline { max-height:340px; overflow-y:auto; padding-right:6px; }
+  .photo-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(85px,1fr)); gap:10px; margin-top:8px; }
+  .photo-thumb { width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:10px; border:1px solid var(--border); cursor:zoom-in; }
+
+  /* status label colours */
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 20px;
+    font-size: 12px; font-weight: 600;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- PROGRESS TRACKER -->
+{% set all_steps = ['received','sent_for_inspection','inspection_completed','estimate_sent','estimate_approved','in_repair','repair_done','invoice_uploaded','payment_received','dispatched','delivered','closed'] %}
+{% set step_idx = all_steps.index(job.status) if job.status in all_steps else 0 %}
+<div class="card mb-6" style="overflow:hidden">
+  <div class="card-header" style="flex-wrap:wrap;gap:8px">
+    <span class="card-title">🗺️ Repair Journey</span>
+    {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+    <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+  </div>
+  <div class="progress-track">
+    {% for step in all_steps %}
+    {% set si = loop.index0 %}
+    {% if not loop.first %}<div class="step-line {% if si <= step_idx %}done{% endif %}"></div>{% endif %}
+    <div class="progress-step">
+      <div class="step-dot {% if si < step_idx %}done{% elif si == step_idx %}current{% endif %}" title="{{ status_flow.get(step,{}).get('label',step) }}">
+        {% if si < step_idx %}✓{% else %}{{ status_flow.get(step,{}).get('icon','•') }}{% endif %}
+        <span class="step-label">{{ status_flow.get(step,{}).get('label',step) }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="job-detail-container">
+  <!-- LEFT -->
+  <div>
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">👤 Customer</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Name</td><td style="padding:6px 0;font-weight:500">{{ job.customer_name or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Phone</td><td style="padding:6px 0"><a href="tel:{{ job.customer_phone }}" style="color:var(--blue)">{{ job.customer_phone or '—' }}</a></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Email</td><td style="padding:6px 0">{{ job.customer_email or '—' }}</td></tr>
+      </table>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">📦 Item</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Type</td><td style="padding:6px 0;font-weight:500">{{ job.item_type or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Job ID</td><td style="padding:6px 0"><code style="font-size:11px;color:var(--accent)">{{ job.job_id }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Problem</td><td style="padding:6px 0">{{ job.item_description or '—' }}</td></tr>
+        {% if job.notes %}<tr><td style="padding:6px 0;color:var(--muted)">Notes</td><td style="padding:6px 0">{{ job.notes }}</td></tr>{% endif %}
+      </table>
+    </div>
+
+    {% if job.inspection_findings %}
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">🔍 Inspection Findings</span></div>
+      <div style="font-size:13px;color:var(--text)">{{ job.inspection_findings }}</div>
+    </div>
+    {% endif %}
+
+    {% if job.estimate_amount %}
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">📄 Estimate</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Amount</td><td style="padding:6px 0;font-weight:700;color:var(--green)">₹{{ "%.2f"|format(job.estimate_amount) }}</td></tr>
+        {% if job.estimate_notes %}<tr><td style="padding:6px 0;color:var(--muted)">Notes</td><td style="padding:6px 0">{{ job.estimate_notes }}</td></tr>{% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Status</td><td style="padding:6px 0">
+          {% if job.status == 'estimate_approved' %}<span style="color:var(--green);font-weight:600">✅ Approved</span>
+          {% elif job.status == 'estimate_rejected' %}<span style="color:var(--red);font-weight:600">🚫 Rejected</span>
+          {% else %}<span style="color:var(--yellow);font-weight:600">⏳ Awaiting Approval</span>{% endif %}
+        </td></tr>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if job.repair_findings %}
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">🔧 Repair Details</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Findings</td><td style="padding:6px 0">{{ job.repair_findings }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Parts</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.parts_cost or 0) }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Labour</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.labour_cost or 0) }}</td></tr>
+        <tr style="border-top:1px solid var(--border)"><td style="padding:8px 0;font-weight:700">Total</td><td style="padding:8px 0;color:var(--green);font-weight:700;font-size:15px">₹{{ "%.2f"|format(job.total_amount or 0) }}</td></tr>
+      </table>
+    </div>
+    {% endif %}
+
+    <!-- Photos -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <span class="card-title">📸 Photos</span>
+        <button onclick="openModal('addPhotoModal')" class="btn btn-secondary btn-sm">+ Add</button>
+      </div>
+      {% if photos %}
+      <div class="photo-grid">
+        {% for p in photos %}
+        <img src="/static/uploads/{{ p.photo_path }}" class="photo-thumb" onclick="window.open(this.src)" loading="lazy" alt="photo">
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No photos yet</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div>
+    <!-- ACTIONS (desktop) -->
+    <div class="card mb-4 action-card-desktop">
+      <div class="card-header"><span class="card-title">⚡ Actions</span></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+
+        {# sent_for_inspection → technician does inspection #}
+        {% if job.status == 'sent_for_inspection' %}
+        <button onclick="openModal('inspectionModal')" class="btn btn-primary" style="width:100%">🔍 Complete Inspection</button>
+        {% endif %}
+
+        {# inspection_completed → send estimate #}
+        {% if job.status == 'inspection_completed' %}
+        <button onclick="openModal('estimateModal')" class="btn btn-success" style="width:100%">📄 Send Estimate to Customer</button>
+        {% endif %}
+
+        {# estimate_approved → start repair #}
+        {% if job.status == 'estimate_approved' %}
+        <div style="background:rgba(77,182,172,.1);border:1px solid rgba(77,182,172,.3);border-radius:8px;padding:10px;font-size:12px;color:var(--green);margin-bottom:4px">
+          ✅ Customer approved the estimate of ₹{{ "%.2f"|format(job.estimate_amount or 0) }}
+        </div>
+        <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="start_repair">
+          <button type="submit" class="btn btn-primary" style="width:100%">🔧 Start Repair</button>
+        </form>
+        {% endif %}
+
+        {# in_repair → complete repair #}
+        {% if job.status == 'in_repair' %}
+        <button onclick="openModal('repairCompleteModal')" class="btn btn-success" style="width:100%">✅ Mark Repair Complete</button>
+        {% endif %}
+
+        {# estimate_rejected → notify #}
+        {% if job.status == 'estimate_rejected' %}
+        <div style="background:rgba(239,83,80,.1);border:1px solid rgba(239,83,80,.3);border-radius:8px;padding:10px;font-size:12px;color:#EF5350">
+          🚫 Estimate was rejected. Contact admin for next steps.
+        </div>
+        {% endif %}
+
+        {# repair_done / later stages → read only for tech #}
+        {% if job.status in ['repair_done','invoice_uploaded','payment_received','dispatched','delivered','closed'] %}
+        <div style="background:var(--bg3);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);text-align:center">
+          {{ status_flow.get(job.status,{}).get('icon','•') }} {{ status_flow.get(job.status,{}).get('label',job.status) }} — awaiting admin action
+        </div>
+        {% endif %}
+
+        <!-- Always: update progress notes -->
+        {% if job.status in ['sent_for_inspection','in_repair'] %}
+        <button onclick="openModal('progressModal')" class="btn btn-secondary" style="width:100%">📝 Add Progress Note</button>
+        {% endif %}
+
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">📜 Activity Log</span></div>
+      {% if logs %}
+      <div class="timeline">
+        {% for log in logs %}
+        <div class="timeline-item">
+          <div class="timeline-meta">{{ log.user_name or 'System' }} · {{ log.created_at[:16] }}</div>
+          <div class="timeline-content">{{ log.action }}</div>
+          {% if log.details %}<div class="timeline-details">{{ log.details }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No activity yet</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- MOBILE STICKY ACTIONS -->
+<div class="actions-sticky-mobile">
+  {% if job.status == 'sent_for_inspection' %}
+  <button onclick="openModal('inspectionModal')" class="btn btn-primary" style="flex:1">🔍 Inspection Done</button>
+  {% endif %}
+  {% if job.status == 'inspection_completed' %}
+  <button onclick="openModal('estimateModal')" class="btn btn-success" style="flex:1">📄 Send Estimate</button>
+  {% endif %}
+  {% if job.status == 'estimate_approved' %}
+  <form method="POST" action="/tech/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="start_repair">
+    <button type="submit" class="btn btn-primary" style="width:100%">🔧 Start Repair</button>
+  </form>
+  {% endif %}
+  {% if job.status == 'in_repair' %}
+  <button onclick="openModal('repairCompleteModal')" class="btn btn-success" style="flex:1">✅ Repair Done</button>
+  {% endif %}
+</div>
+
+<!-- ═══════════════ MODALS ═══════════════ -->
+
+<!-- Inspection Modal -->
+<div class="modal-overlay" id="inspectionModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🔍 Complete Inspection</div>
+      <button class="modal-close" onclick="closeModal('inspectionModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="complete_inspection">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Inspection Findings *</label>
+          <textarea name="inspection_findings" class="form-control" rows="4" placeholder="Describe what you found during inspection..." required></textarea>
+        </div>
+        <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
+          💡 After marking inspection complete, you'll be able to send an estimate to the customer.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('inspectionModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">✅ Inspection Complete</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Not Repairable option inside inspection -->
+<div class="modal-overlay" id="notRepairableModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">❌ Mark as Not Repairable</div>
+      <button class="modal-close" onclick="closeModal('notRepairableModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="not_repairable">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Inspection Findings</label>
+          <textarea name="inspection_findings" class="form-control" rows="2" placeholder="What was found during inspection..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reason Not Repairable *</label>
+          <textarea name="not_repairable_reason" class="form-control" rows="3" placeholder="Why can't this be repaired?" required></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('notRepairableModal')">Cancel</button>
+        <button type="submit" class="btn btn-danger">Mark Not Repairable</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Estimate Modal -->
+<div class="modal-overlay" id="estimateModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">📄 Send Estimate to Customer</div>
+      <button class="modal-close" onclick="closeModal('estimateModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="send_estimate">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Estimate Amount (₹) *</label>
+          <input type="number" step="0.01" name="estimate_amount" class="form-control" placeholder="0.00"
+                 required inputmode="decimal" oninput="updateEstimateDisplay(this.value)">
+        </div>
+        <div style="background:var(--bg3);border-radius:10px;padding:14px;text-align:center;margin-bottom:12px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Estimate Total</div>
+          <div style="font-size:28px;font-weight:800;color:var(--green)" id="estimate_display">₹0.00</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notes / Breakdown</label>
+          <textarea name="estimate_notes" class="form-control" rows="3"
+                    placeholder="Parts, labour breakdown, what will be done..."></textarea>
+        </div>
+        <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
+          📱 Admin will share this estimate with the customer for approval.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('estimateModal')">Cancel</button>
+        <button type="submit" class="btn btn-success">📤 Send Estimate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Repair Complete Modal -->
+<div class="modal-overlay" id="repairCompleteModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">✅ Mark Repair Complete</div>
+      <button class="modal-close" onclick="closeModal('repairCompleteModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="repair_complete">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Repair Findings *</label>
+          <textarea name="repair_findings" class="form-control" rows="3"
+                    placeholder="What was repaired, replaced, done..." required></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Parts Cost (₹)</label>
+            <input type="number" step="0.01" name="parts_cost" class="form-control"
+                   value="{{ job.estimate_amount or 0 }}" id="parts" oninput="calcTotal()" inputmode="decimal">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Labour Cost (₹)</label>
+            <input type="number" step="0.01" name="labour_cost" class="form-control"
+                   value="0" id="labour" oninput="calcTotal()" inputmode="decimal">
+          </div>
+        </div>
+        <div style="background:var(--bg3);border-radius:10px;padding:14px;text-align:center;margin-bottom:12px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total Amount</div>
+          <div style="font-size:28px;font-weight:800;color:var(--green)" id="total_display">₹{{ "%.2f"|format(job.estimate_amount or 0) }}</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('repairCompleteModal')">Cancel</button>
+        <button type="submit" class="btn btn-success">✅ Complete Repair</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Progress Note Modal -->
+<div class="modal-overlay" id="progressModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">📝 Add Progress Note</div>
+      <button class="modal-close" onclick="closeModal('progressModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="update_progress">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Note</label>
+          <textarea name="notes" class="form-control" rows="3" placeholder="Progress update...">{{ job.notes or '' }}</textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('progressModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Note</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Photo Modal -->
+<div class="modal-overlay" id="addPhotoModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">📸 Add Photos</div>
+      <button class="modal-close" onclick="closeModal('addPhotoModal')">✕</button>
+    </div>
+    <form method="POST" action="/tech/jobs/{{ job.job_id }}/update" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="add_photo">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Select Photos (max 3)</label>
+          <input type="file" name="photos" class="form-control" accept="image/*" multiple>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addPhotoModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Upload</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function calcTotal() {
+  var p = parseFloat(document.getElementById('parts').value) || 0;
+  var l = parseFloat(document.getElementById('labour').value) || 0;
+  document.getElementById('total_display').textContent = '₹' + (p + l).toFixed(2);
+}
+function updateEstimateDisplay(val) {
+  var n = parseFloat(val) || 0;
+  document.getElementById('estimate_display').textContent = '₹' + n.toFixed(2);
+}
+</script>
+{% endblock %}

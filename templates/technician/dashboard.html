@@ -1,0 +1,119 @@
+{% extends 'shared/base.html' %}
+{% block title %}My Dashboard — Maktronics{% endblock %}
+{% block page_title %}My Dashboard{% endblock %}
+{% block page_sub %}Welcome back, {{ session.name }}{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">My Work</div>
+  <a href="/tech" class="nav-item active"><span class="icon">📊</span> Dashboard</a>
+  <a href="/tech/jobs" class="nav-item"><span class="icon">🔧</span> My Jobs</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Tools</div>
+  <a href="/scanner" class="nav-item"><span class="icon">📷</span> Scan Barcode</a>
+</div>
+{% endblock %}
+
+{% block bn_tech_dash %}active{% endblock %}
+
+{% block content %}
+<!-- STATS -->
+<div class="stats-grid">
+  <div class="stat-card" style="--accent-color:#64B5F6">
+    <div class="stat-icon">📦</div>
+    <div class="stat-value">{{ stats.total }}</div>
+    <div class="stat-label">Total Assigned</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#F06292">
+    <div class="stat-icon">🔧</div>
+    <div class="stat-value">{{ stats.in_repair }}</div>
+    <div class="stat-label">In Progress</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#4DB6AC">
+    <div class="stat-icon">✅</div>
+    <div class="stat-value">{{ stats.repair_done }}</div>
+    <div class="stat-label">Completed</div>
+  </div>
+  <div class="stat-card" style="--accent-color:#90A4AE">
+    <div class="stat-icon">🔒</div>
+    <div class="stat-value">{{ stats.closed }}</div>
+    <div class="stat-label">Closed</div>
+  </div>
+</div>
+
+<!-- MY JOBS - header -->
+<div class="card" style="padding:0">
+  <div class="card-header" style="padding:14px 18px">
+    <span class="card-title">My Assigned Jobs</span>
+    <a href="/tech/jobs" class="btn btn-secondary btn-sm">View All →</a>
+  </div>
+
+  {% if jobs %}
+  <!-- TABLE (tablet/desktop) -->
+  <div class="table-wrap" style="border-radius:0;border-left:none;border-right:none;border-bottom:none">
+    <table>
+      <thead>
+        <tr>
+          <th>Job ID</th>
+          <th>Customer</th>
+          <th>Item</th>
+          <th>Status</th>
+          <th>Received</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><code style="font-size:11px;color:var(--accent)">{{ job.job_id }}</code></td>
+          <td>
+            <div style="font-weight:500">{{ job.customer_name or '—' }}</div>
+            <div style="font-size:11px;color:var(--muted)">{{ job.customer_phone or '' }}</div>
+          </td>
+          <td>{{ job.item_type or '—' }}</td>
+          <td>
+            {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+            <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+          </td>
+          <td style="font-size:11px;color:var(--muted);white-space:nowrap">{{ job.received_at[:10] }}</td>
+          <td><a href="/tech/jobs/{{ job.job_id }}" class="btn btn-secondary btn-xs">Open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- MOBILE CARDS -->
+  <div class="job-card-list" style="padding:12px">
+    {% for job in jobs %}
+    {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+    <a href="/tech/jobs/{{ job.job_id }}" class="job-card">
+      <div class="job-card-top">
+        <div>
+          <div class="job-card-id">{{ job.job_id }}</div>
+          <div class="job-card-name">{{ job.customer_name or '—' }}</div>
+          <div class="job-card-phone">{{ job.customer_phone or '' }}</div>
+        </div>
+        <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+      </div>
+      <div class="job-card-item">
+        <span>📦</span>
+        <span>{{ job.item_type or '—' }}</span>
+      </div>
+      <div class="job-card-bottom">
+        <span class="job-card-meta">📅 {{ job.received_at[:10] }}</span>
+        <span class="btn btn-secondary btn-xs">Open →</span>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% else %}
+  <div class="empty-state">
+    <div class="empty-icon">🎉</div>
+    <div>No jobs assigned to you yet.</div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

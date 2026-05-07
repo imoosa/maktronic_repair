@@ -1,0 +1,389 @@
+{% extends 'shared/base.html' %}
+{% block title %}Barcode Scanner — Maktronics{% endblock %}
+{% block page_title %}Barcode Scanner{% endblock %}
+{% block page_sub %}Scan or type a Job ID / barcode{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Tools</div>
+  <a href="/scanner" class="nav-item active"><span class="icon">📷</span> Scanner</a>
+  {% if session.role == 'admin' %}
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  {% else %}
+  <a href="/tech" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block head_styles %}
+<style>
+  .scanner-wrap {
+    max-width: 500px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* Camera viewer */
+  #camera-box {
+    position: relative;
+    border-radius: 16px;
+    overflow: hidden;
+    background: #000;
+    aspect-ratio: 4/3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #camera-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Animated scan line */
+  .scan-line {
+    position: absolute;
+    left: 10%;
+    right: 10%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #64B5F6, transparent);
+    animation: scanMove 2s ease-in-out infinite;
+    box-shadow: 0 0 8px #64B5F6;
+  }
+
+  @keyframes scanMove {
+    0%   { top: 20%; }
+    50%  { top: 80%; }
+    100% { top: 20%; }
+  }
+
+  /* Corner guides */
+  .scan-corner {
+    position: absolute;
+    width: 30px;
+    height: 30px;
+    border-color: #64B5F6;
+    border-style: solid;
+    border-width: 0;
+  }
+  .scan-corner.tl { top: 12%; left: 10%; border-top-width: 3px; border-left-width: 3px; border-radius: 4px 0 0 0; }
+  .scan-corner.tr { top: 12%; right: 10%; border-top-width: 3px; border-right-width: 3px; border-radius: 0 4px 0 0; }
+  .scan-corner.bl { bottom: 12%; left: 10%; border-bottom-width: 3px; border-left-width: 3px; border-radius: 0 0 0 4px; }
+  .scan-corner.br { bottom: 12%; right: 10%; border-bottom-width: 3px; border-right-width: 3px; border-radius: 0 0 4px 0; }
+
+  /* Camera placeholder when off */
+  #camera-placeholder {
+    color: var(--muted);
+    font-size: 13px;
+    text-align: center;
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* Status banner */
+  #scan-status {
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    transition: all 0.3s;
+    display: none;
+  }
+  #scan-status.success { background: rgba(77,182,172,.15); color: #4DB6AC; border: 1px solid rgba(77,182,172,.3); display: block; }
+  #scan-status.error   { background: rgba(239,83,80,.12);  color: #EF5350; border: 1px solid rgba(239,83,80,.25); display: block; }
+  #scan-status.loading { background: rgba(100,181,246,.1); color: #64B5F6; border: 1px solid rgba(100,181,246,.2); display: block; }
+
+  /* Manual input */
+  .manual-row {
+    display: flex;
+    gap: 10px;
+  }
+  .manual-row input {
+    flex: 1;
+    font-family: monospace;
+    letter-spacing: 0.5px;
+  }
+
+  /* USB scanner indicator */
+  .usb-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    background: rgba(100,181,246,.1);
+    color: #64B5F6;
+    border: 1px solid rgba(100,181,246,.2);
+  }
+  .usb-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #64B5F6;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="scanner-wrap">
+
+  <!-- USB/BT Scanner status pill -->
+  <div style="text-align:center">
+    <span class="usb-pill"><span class="usb-dot"></span> Listening for USB / Bluetooth scanner</span>
+  </div>
+
+  <!-- Status banner -->
+  <div id="scan-status"></div>
+
+  <!-- Camera card -->
+  <div class="card" style="padding:0;overflow:hidden">
+    <div class="card-header" style="padding:12px 16px">
+      <span class="card-title">📷 Camera Scanner</span>
+      <button id="camera-toggle-btn" class="btn btn-primary btn-sm" onclick="toggleCamera()">Start Camera</button>
+    </div>
+    <div id="camera-box">
+      <div id="camera-placeholder">
+        <div style="font-size:40px">📷</div>
+        <div>Click <strong>Start Camera</strong> to scan via webcam or phone camera</div>
+      </div>
+      <video id="camera-video" autoplay muted playsinline style="display:none"></video>
+      <!-- Overlay guides (shown when camera is active) -->
+      <div id="scan-overlay" style="display:none; position:absolute;inset:0;pointer-events:none">
+        <div class="scan-line"></div>
+        <div class="scan-corner tl"></div>
+        <div class="scan-corner tr"></div>
+        <div class="scan-corner bl"></div>
+        <div class="scan-corner br"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual / USB fallback input -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">⌨️ Manual / USB Entry</span></div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px">
+      USB and Bluetooth barcode scanners work automatically — they type the code here and press Enter. You can also type a Job ID manually.
+    </p>
+    <div class="manual-row">
+      <input type="text" id="manual-input" class="form-control" placeholder="e.g. MAK-20240815-ABC123"
+             autocomplete="off" autocorrect="off" spellcheck="false">
+      <button class="btn btn-primary" onclick="submitManual()">Open →</button>
+    </div>
+  </div>
+
+  <!-- Recent scans -->
+  <div class="card" id="recent-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">🕐 Recent Scans</span>
+      <button class="btn btn-secondary btn-sm" onclick="clearRecent()">Clear</button>
+    </div>
+    <div id="recent-list" style="display:flex;flex-direction:column;gap:6px"></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- ZXing for camera barcode decoding -->
+<script src="https://unpkg.com/@zxing/library@0.18.6/umd/index.min.js"></script>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let cameraActive = false;
+let codeReader = null;
+let recentScans = JSON.parse(sessionStorage.getItem('recentScans') || '[]');
+
+// ── Status banner ──────────────────────────────────────────────────────────
+function showStatus(msg, type) {
+  var el = document.getElementById('scan-status');
+  el.textContent = msg;
+  el.className = type; // success | error | loading
+}
+function hideStatus() {
+  document.getElementById('scan-status').className = '';
+  document.getElementById('scan-status').style.display = 'none';
+}
+
+// ── Lookup & redirect ──────────────────────────────────────────────────────
+function lookupCode(code) {
+  code = code.trim();
+  if (!code) return;
+
+  showStatus('🔍 Looking up: ' + code + '…', 'loading');
+
+  fetch('/api/scan?code=' + encodeURIComponent(code))
+    .then(r => r.json())
+    .then(data => {
+      if (data.found) {
+        showStatus('✅ Found ' + data.job_id + ' — opening…', 'success');
+        addRecent(code, data.job_id, data.redirect);
+        setTimeout(() => { window.location.href = data.redirect; }, 600);
+      } else {
+        showStatus('❌ ' + (data.error || 'Job not found'), 'error');
+        setTimeout(hideStatus, 3000);
+      }
+    })
+    .catch(() => {
+      showStatus('❌ Network error — try again', 'error');
+      setTimeout(hideStatus, 3000);
+    });
+}
+
+// ── Manual input ───────────────────────────────────────────────────────────
+function submitManual() {
+  var val = document.getElementById('manual-input').value;
+  if (val.trim()) lookupCode(val.trim());
+}
+
+document.getElementById('manual-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') submitManual();
+});
+
+// ── USB / Bluetooth scanner (keyboard wedge) ───────────────────────────────
+// These scanners type fast and end with Enter. We intercept globally.
+let usbBuffer = '';
+let usbTimer = null;
+const USB_TIMEOUT = 80; // ms between chars — scanners are much faster than humans
+
+document.addEventListener('keydown', function(e) {
+  // Ignore if user is typing in the manual input (they'll use Enter themselves)
+  if (document.activeElement === document.getElementById('manual-input')) return;
+  // Ignore modifier keys
+  if (e.key.length > 1 && e.key !== 'Enter') return;
+
+  if (e.key === 'Enter') {
+    if (usbBuffer.length > 3) {
+      lookupCode(usbBuffer);
+      usbBuffer = '';
+    }
+    return;
+  }
+
+  usbBuffer += e.key;
+
+  clearTimeout(usbTimer);
+  usbTimer = setTimeout(() => {
+    // If buffer filled quickly (scanner speed), treat as a scan
+    // If it took long (human typing), it might be partial — leave it
+    if (usbBuffer.length > 6) {
+      lookupCode(usbBuffer);
+      usbBuffer = '';
+    } else {
+      // Likely human typing — push to manual input
+      var inp = document.getElementById('manual-input');
+      inp.value += usbBuffer;
+      inp.focus();
+      usbBuffer = '';
+    }
+  }, USB_TIMEOUT);
+});
+
+// ── Camera scanner ─────────────────────────────────────────────────────────
+function toggleCamera() {
+  if (cameraActive) {
+    stopCamera();
+  } else {
+    startCamera();
+  }
+}
+
+function startCamera() {
+  var video = document.getElementById('camera-video');
+  var placeholder = document.getElementById('camera-placeholder');
+  var overlay = document.getElementById('scan-overlay');
+  var btn = document.getElementById('camera-toggle-btn');
+
+  if (!ZXing) {
+    showStatus('❌ Camera scanner library not loaded', 'error');
+    return;
+  }
+
+  codeReader = new ZXing.BrowserMultiFormatReader();
+  codeReader.decodeFromVideoDevice(null, 'camera-video', function(result, err) {
+    if (result) {
+      var code = result.getText();
+      // Debounce: don't fire twice for same code within 3s
+      if (window._lastScan === code && Date.now() - window._lastScanTime < 3000) return;
+      window._lastScan = code;
+      window._lastScanTime = Date.now();
+      lookupCode(code);
+    }
+  });
+
+  video.style.display = 'block';
+  placeholder.style.display = 'none';
+  overlay.style.display = 'block';
+  btn.textContent = 'Stop Camera';
+  btn.classList.remove('btn-primary');
+  btn.classList.add('btn-secondary');
+  cameraActive = true;
+}
+
+function stopCamera() {
+  if (codeReader) {
+    codeReader.reset();
+    codeReader = null;
+  }
+  var video = document.getElementById('camera-video');
+  var placeholder = document.getElementById('camera-placeholder');
+  var overlay = document.getElementById('scan-overlay');
+  var btn = document.getElementById('camera-toggle-btn');
+
+  video.style.display = 'none';
+  placeholder.style.display = 'flex';
+  overlay.style.display = 'none';
+  btn.textContent = 'Start Camera';
+  btn.classList.remove('btn-secondary');
+  btn.classList.add('btn-primary');
+  cameraActive = false;
+}
+
+// ── Recent scans ───────────────────────────────────────────────────────────
+function addRecent(code, jobId, url) {
+  recentScans = recentScans.filter(r => r.code !== code);
+  recentScans.unshift({ code, jobId, url, time: new Date().toLocaleTimeString() });
+  if (recentScans.length > 5) recentScans.pop();
+  sessionStorage.setItem('recentScans', JSON.stringify(recentScans));
+  renderRecent();
+}
+
+function renderRecent() {
+  var card = document.getElementById('recent-card');
+  var list = document.getElementById('recent-list');
+  if (!recentScans.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  list.innerHTML = recentScans.map(r => `
+    <a href="${r.url}" style="display:flex;align-items:center;justify-content:space-between;
+       padding:10px 12px;border-radius:10px;background:var(--bg3);
+       text-decoration:none;color:var(--text);gap:10px">
+      <div>
+        <div style="font-size:12px;font-family:monospace;color:var(--accent)">${r.jobId}</div>
+        <div style="font-size:11px;color:var(--muted)">${r.code}</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted)">${r.time} →</div>
+    </a>
+  `).join('');
+}
+
+function clearRecent() {
+  recentScans = [];
+  sessionStorage.removeItem('recentScans');
+  renderRecent();
+}
+
+// Init
+renderRecent();
+</script>
+{% endblock %}

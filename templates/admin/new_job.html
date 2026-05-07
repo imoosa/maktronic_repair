@@ -1,0 +1,135 @@
+{% extends 'shared/base.html' %}
+{% block title %}New Job — Maktronics{% endblock %}
+{% block page_title %}New Job{% endblock %}
+{% block page_sub %}Register a new repair item{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/jobs/new" class="nav-item active"><span class="icon">➕</span> New Job</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Management</div>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+</div>
+{% endblock %}
+
+{% block bn_jobs %}active{% endblock %}
+
+{% block head_styles %}
+/* Sticky submit bar on mobile */
+.form-submit-bar{
+  display:flex;gap:12px;margin-top:4px;
+}
+@media(max-width:640px){
+  .form-submit-bar{
+    position:fixed;bottom:var(--bottom-nav-h,64px);left:0;right:0;
+    background:var(--bg2);border-top:1px solid var(--border);
+    padding:12px 14px;margin:0;z-index:90;gap:8px;
+    padding-bottom:calc(12px + env(safe-area-inset-bottom));
+  }
+  .form-submit-bar .btn{flex:1;justify-content:center}
+  /* add padding to keep form above sticky bar */
+  #new-job-form{padding-bottom:90px}
+}
+{% endblock %}
+
+{% block content %}
+<div style="max-width:680px" id="new-job-form">
+<form method="POST" enctype="multipart/form-data">
+
+  <!-- Customer Details -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">📋 Customer Details</span>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Customer Name *</label>
+        <input type="text" name="customer_name" class="form-control" placeholder="Full name" required autocomplete="name">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Phone Number *</label>
+        <input type="tel" name="customer_phone" class="form-control" placeholder="+91 98765 43210" required autocomplete="tel" inputmode="tel">
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Email Address</label>
+      <input type="email" name="customer_email" class="form-control" placeholder="customer@email.com" autocomplete="email" inputmode="email">
+    </div>
+  </div>
+
+  <!-- Item Details -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">🔧 Item Details</span>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Item Type *</label>
+        <input type="text" name="item_type" class="form-control" placeholder="e.g. Mobile Phone, Laptop, TV..." required>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Assign Technician</label>
+        <select name="assigned_tech_id" class="form-control">
+          <option value="">Unassigned</option>
+          {% for tech in technicians %}
+          <option value="{{ tech.id }}">{{ tech.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Item Description / Problem *</label>
+      <textarea name="item_description" class="form-control" rows="3" placeholder="Describe the item and the problem reported by customer..." required></textarea>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Additional Notes</label>
+      <textarea name="notes" class="form-control" rows="2" placeholder="Any special instructions or observations..."></textarea>
+    </div>
+  </div>
+
+  <!-- Photos -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">📸 Item Photos</span>
+      <span class="tag">Up to 3</span>
+    </div>
+    <div class="form-group" style="margin-bottom:8px">
+      <label class="form-label">Capture / Upload Photos</label>
+      <input type="file" name="photos" class="form-control" multiple accept="image/*" capture="environment" style="padding:8px 12px">
+    </div>
+    <div id="preview-grid" class="photo-grid" style="margin-top:8px"></div>
+  </div>
+
+  <!-- Submit (desktop) -->
+  <div class="form-submit-bar">
+    <button type="submit" class="btn btn-primary">📦 Create Job &amp; Generate ID</button>
+    <a href="/admin/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+
+</form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelector('input[type="file"]').addEventListener('change', function(e) {
+  const grid = document.getElementById('preview-grid')
+  grid.innerHTML = ''
+  const files = Array.from(e.target.files).slice(0, 3)
+  files.forEach(file => {
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const img = document.createElement('img')
+      img.src = ev.target.result
+      img.className = 'photo-thumb'
+      grid.appendChild(img)
+    }
+    reader.readAsDataURL(file)
+  })
+})
+</script>
+{% endblock %}

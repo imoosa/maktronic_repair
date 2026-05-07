@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Invoice {{ job.invoice_number }}</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#fff;color:#1a1a1a;font-family:'DM Sans',sans-serif;padding:40px;max-width:700px;margin:0 auto}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:40px;padding-bottom:24px;border-bottom:3px solid #FF6B2B}
+.company h1{font-family:'Syne',sans-serif;font-size:26px;font-weight:800;color:#FF6B2B;letter-spacing:2px}
+.company p{font-size:12px;color:#666;margin-top:4px}
+.invoice-meta{text-align:right}
+.invoice-meta h2{font-family:'Syne',sans-serif;font-size:20px;font-weight:700;color:#1a1a1a}
+.invoice-meta .inv-num{font-size:13px;color:#FF6B2B;font-weight:600;margin-top:4px}
+.invoice-meta .date{font-size:12px;color:#666;margin-top:2px}
+.section{margin-bottom:28px}
+.section-title{font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#999;font-weight:600;margin-bottom:12px}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.info-box{background:#f8f9fb;border-radius:10px;padding:16px}
+.info-label{font-size:11px;color:#999;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px}
+.info-value{font-size:14px;font-weight:500;color:#1a1a1a}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th{padding:10px 14px;background:#f0f1f5;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#666;text-align:left;font-weight:600}
+td{padding:12px 14px;border-bottom:1px solid #f0f1f5;font-size:13px}
+.total-row td{background:#f8f9fb;font-weight:700;font-size:16px;border-bottom:none;padding-top:14px}
+.total-amount{color:#FF6B2B;font-size:20px;font-weight:800}
+.payment-status{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:700}
+.paid{background:rgba(62,207,142,.15);color:#2a9d6a}
+.pending{background:rgba(255,107,43,.1);color:#FF6B2B}
+.footer{margin-top:40px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#999;text-align:center}
+.findings-box{background:#f8f9fb;border-radius:10px;padding:16px;font-size:13px;color:#333;line-height:1.6}
+@media print{body{padding:20px}.no-print{display:none}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="company">
+    <h1>⚡ MAKTRONICS</h1>
+    <p>Electronics Repair & Service</p>
+    <p style="margin-top:2px">maktronics@email.com · +91 98765 00000</p>
+  </div>
+  <div class="invoice-meta">
+    <h2>INVOICE</h2>
+    <div class="inv-num">{{ job.invoice_number }}</div>
+    <div class="date">{{ job.updated_at[:10] }}</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="info-grid">
+    <div class="info-box">
+      <div class="info-label">Bill To</div>
+      <div class="info-value" style="font-weight:700">{{ job.customer_name }}</div>
+      <div style="font-size:13px;color:#555;margin-top:4px">{{ job.customer_phone }}</div>
+      {% if job.customer_email %}<div style="font-size:12px;color:#999">{{ job.customer_email }}</div>{% endif %}
+    </div>
+    <div class="info-box">
+      <div class="info-label">Job Reference</div>
+      <div class="info-value" style="color:#FF6B2B">{{ job.job_id }}</div>
+      <div style="font-size:12px;color:#999;margin-top:4px">Barcode: {{ job.barcode }}</div>
+      <div style="margin-top:8px">
+        {% if job.payment_status == 'paid' %}
+        <span class="payment-status paid">✅ PAID</span>
+        {% else %}
+        <span class="payment-status pending">⏳ PAYMENT PENDING</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Item Repaired</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Type</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ job.item_description or job.item_type }}</td>
+        <td>{{ job.item_type }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{% if job.repair_findings %}
+<div class="section">
+  <div class="section-title">Repair Findings</div>
+  <div class="findings-box">{{ job.repair_findings }}</div>
+</div>
+{% endif %}
+
+<div class="section">
+  <div class="section-title">Charges</div>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th style="text-align:right">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Spare Parts / Components</td>
+        <td style="text-align:right">₹{{ "%.2f"|format(job.parts_cost) }}</td>
+      </tr>
+      <tr>
+        <td>Labour / Service Charges</td>
+        <td style="text-align:right">₹{{ "%.2f"|format(job.labour_cost) }}</td>
+      </tr>
+      <tr class="total-row">
+        <td style="font-weight:700">TOTAL AMOUNT</td>
+        <td style="text-align:right"><span class="total-amount">₹{{ "%.2f"|format(job.total_amount) }}</span></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="footer">
+  <p>Thank you for choosing Maktronics! This invoice was generated automatically.</p>
+  <p style="margin-top:4px">For queries: maktronics@email.com</p>
+</div>
+
+<div class="no-print" style="margin-top:24px;text-align:center">
+  <button onclick="window.print()" style="background:#FF6B2B;color:#fff;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">🖨️ Print / Save PDF</button>
+  <button onclick="window.close()" style="background:#f0f1f5;color:#333;border:none;padding:12px 24px;border-radius:8px;cursor:pointer;font-size:14px;margin-left:8px">✕ Close</button>
+</div>
+</body>
+</html>
