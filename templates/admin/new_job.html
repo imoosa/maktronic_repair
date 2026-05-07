@@ -95,12 +95,18 @@
   <div class="card mb-4">
     <div class="card-header">
       <span class="card-title">📸 Item Photos</span>
-      <span class="tag">Up to 3</span>
+      <span id="photo-count-tag" class="tag" style="display:none"></span>
+      <button type="button" id="add-photo-btn" onclick="document.getElementById('photo-file-input').click()" class="btn btn-secondary btn-sm" style="display:none">+ Add</button>
     </div>
-    <div class="form-group" style="margin-bottom:8px">
-      <label class="form-label">Capture / Upload Photos</label>
-      <input type="file" name="photos" class="form-control" multiple accept="image/*" capture="environment" style="padding:8px 12px">
+
+    <!-- Initial upload area (visible before first photo is chosen) -->
+    <div id="photo-upload-area" class="form-group" style="margin-bottom:8px">
+      <label class="form-label">Capture / Upload Photos <span style="color:var(--muted);font-weight:400">(up to 3)</span></label>
+      <!-- name="photos" so Flask receives request.files.getlist("photos") as usual -->
+      <input type="file" id="photo-file-input" name="photos" multiple accept="image/*" capture="environment" style="padding:8px 12px" class="form-control">
     </div>
+
+    <!-- Thumbnails appear here -->
     <div id="preview-grid" class="photo-grid" style="margin-top:8px"></div>
   </div>
 
@@ -116,20 +122,94 @@
 
 {% block scripts %}
 <script>
-document.querySelector('input[type="file"]').addEventListener('change', function(e) {
-  const grid = document.getElementById('preview-grid')
-  grid.innerHTML = ''
-  const files = Array.from(e.target.files).slice(0, 3)
-  files.forEach(file => {
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const img = document.createElement('img')
-      img.src = ev.target.result
-      img.className = 'photo-thumb'
-      grid.appendChild(img)
+(function () {
+  const MAX = 3;
+
+  // dt accumulates File objects across multiple picks.
+  // On submit we push dt.files back into the real <input> so Flask gets
+  // normal multipart files — no base64, no payload bloat.
+  const dt = new DataTransfer();
+
+  const input      = document.getElementById('photo-file-input');
+  const grid       = document.getElementById('preview-grid');
+  const uploadArea = document.getElementById('photo-upload-area');
+  const addBtn     = document.getElementById('add-photo-btn');
+  const countTag   = document.getElementById('photo-count-tag');
+
+  // ----- UI state -----
+  function updateUI() {
+    const count = dt.files.length;
+    if (count === 0) {
+      uploadArea.style.display = '';
+      addBtn.style.display     = 'none';
+      countTag.style.display   = 'none';
+    } else {
+      uploadArea.style.display = 'none';
+      addBtn.style.display     = count < MAX ? '' : 'none';
+      countTag.style.display   = '';
+      countTag.textContent     = count + ' / ' + MAX;
     }
-    reader.readAsDataURL(file)
-  })
-})
+    // Keep the real input in sync so the form sends the right files
+    input.files = dt.files;
+  }
+
+  // ----- Rebuild thumbnail grid -----
+  function rebuildPreviews() {
+    grid.innerHTML = '';
+    Array.from(dt.files).forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative';
+
+        const img = document.createElement('img');
+        img.src       = ev.target.result;
+        img.className = 'photo-thumb';
+        img.title     = file.name;
+
+        const rm = document.createElement('button');
+        rm.type      = 'button';
+        rm.textContent = '✕';
+        rm.setAttribute('aria-label', 'Remove photo');
+        rm.style.cssText =
+          'position:absolute;top:4px;right:4px;' +
+          'width:20px;height:20px;border-radius:50%;border:none;' +
+          'background:rgba(0,0,0,.6);color:#fff;font-size:11px;' +
+          'cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0';
+        rm.onclick = () => removePhoto(idx);
+
+        wrap.appendChild(img);
+        wrap.appendChild(rm);
+        grid.appendChild(wrap);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // ----- Remove a single photo by index -----
+  function removePhoto(idx) {
+    const newDt = new DataTransfer();
+    Array.from(dt.files).forEach((f, i) => { if (i !== idx) newDt.items.add(f); });
+    dt.items.clear();
+    Array.from(newDt.files).forEach(f => dt.items.add(f));
+    rebuildPreviews();
+    updateUI();
+  }
+
+  // ----- Handle new file picks -----
+  input.addEventListener('change', function () {
+    const available = MAX - dt.files.length;
+    Array.from(this.files).slice(0, available).forEach(f => {
+      const isDupe = Array.from(dt.files).some(e => e.name === f.name && e.size === f.size);
+      if (!isDupe) dt.items.add(f);
+    });
+    // Reset value so the same file can be re-selected after removal
+    this.value = '';
+    rebuildPreviews();
+    updateUI();
+  });
+
+  updateUI();
+})();
 </script>
 {% endblock %}

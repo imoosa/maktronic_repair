@@ -393,9 +393,9 @@ def admin_new_job():
                 db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
                            (job_id, filename))
 
-        log_action(db, job_id, 'Job Created & Sent for Inspection', session['user_id'], f"Customer: {data['customer_name']}")
+        log_action(db, job_id, 'Job Created', session['user_id'], f"Customer: {data['customer_name']}")
         db.commit()
-        flash(f'Job {job_id} created successfully! Sent for inspection.', 'success')
+        flash(f'Job {job_id} created successfully!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     db = get_db()
@@ -476,7 +476,7 @@ def admin_update_job(job_id):
         db.execute("""
             UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
             courier_receipt_path=?, dispatch_date=?, updated_at=? WHERE job_id=?
-        """, (tracking, courier_name, receipt_path, dispatch_date, now, job_id))
+        """, (tracking, courier_name, receipt_path, dispatch_date, now))
         log_action(db, job_id, 'Non-repairable item dispatched back to customer', session['user_id'], f'Courier: {courier_name}, Tracking: {tracking}')
 
     elif action == 'generate_estimate':
@@ -549,7 +549,7 @@ def admin_update_job(job_id):
             flash('Please upload a valid invoice file', 'error')
 
     elif action == 'send_payment_notification':
-        # Always re-fetch fresh job data for payment generation
+        # Create Razorpay order and generate a secure payment link
         job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         amount_paise = int(float(job['invoice_total_amount'] or job['total_amount'] or 0) * 100)
         if amount_paise <= 0:
@@ -557,30 +557,24 @@ def admin_update_job(job_id):
             return redirect(url_for('admin_job_detail', job_id=job_id))
 
         try:
-            # Always create a fresh Razorpay order (idempotent — safe to recreate)
             order = razorpay_client.order.create({
                 'amount': amount_paise,
                 'currency': 'INR',
-                'receipt': job_id[:40],          # Razorpay receipt max 40 chars
+                'receipt': job_id,
                 'notes': {
                     'job_id': job_id,
-                    'customer': job['customer_name'] or '',
+                    'customer': job['customer_name'],
                     'invoice': job['invoice_number'] or '',
                 }
             })
-            # Generate a new secure token every time link is (re-)created
             token = uuid.uuid4().hex
             pay_link = url_for('customer_pay', job_id=job_id, token=token, _external=True)
-            # ✅ Save BOTH razorpay_order_id AND payment_token so the payment page works
             db.execute("""
-                UPDATE jobs
-                SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
-                WHERE job_id=?
+                UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=? WHERE job_id=?
             """, (order['id'], token, pay_link, now, job_id))
-            db.commit()
-            log_action(db, job_id, 'Payment Link Generated', session['user_id'],
-                       f'Razorpay Order: {order["id"]}, Amount: ₹{amount_paise / 100:.2f}')
-            flash(f'✅ Payment link ready! Share with customer: {pay_link}', 'success')
+            log_action(db, job_id, 'Payment Notification Sent', session['user_id'],
+                       f'Razorpay Order: {order["id"]}, Amount: ₹{amount_paise/100}')
+            flash(f'Payment link created! Share this with the customer: {pay_link}', 'success')
         except Exception as e:
             flash(f'Razorpay error: {str(e)}', 'error')
         return redirect(url_for('admin_job_detail', job_id=job_id))
@@ -716,29 +710,7 @@ def tech_update_job(job_id):
             flash('Access denied', 'error')
             return redirect(url_for('tech_jobs'))
 
-    if action == 'complete_inspection':
-        findings = request.form.get('inspection_findings')
-        db.execute("UPDATE jobs SET status='inspection_completed', inspection_findings=?, updated_at=? WHERE job_id=?",
-                   (findings, now, job_id))
-        log_action(db, job_id, 'Inspection Completed', tech_id, findings)
-
-    elif action == 'not_repairable':
-        findings = request.form.get('inspection_findings')
-        reason = request.form.get('not_repairable_reason')
-        db.execute("UPDATE jobs SET status='not_repairable', inspection_findings=?, not_repairable_reason=?, updated_at=? WHERE job_id=?",
-                   (findings, reason, now, job_id))
-        log_action(db, job_id, 'Device Not Repairable', tech_id, reason)
-
-    elif action == 'send_estimate':
-        estimate_amount = float(request.form.get('estimate_amount', 0))
-        estimate_notes = request.form.get('estimate_notes', '')
-        db.execute("""
-            UPDATE jobs SET status='estimate_sent', estimate_amount=?,
-            estimate_notes=?, estimate_sent_at=?, updated_at=? WHERE job_id=?
-        """, (estimate_amount, estimate_notes, now, now, job_id))
-        log_action(db, job_id, f'Estimate Generated: ₹{estimate_amount}', tech_id, estimate_notes)
-
-    elif action == 'start_repair':
+    if action == 'start_repair':
         db.execute("UPDATE jobs SET status='in_repair', updated_at=? WHERE job_id=?", (now, job_id))
         log_action(db, job_id, 'Repair Started', tech_id)
 
@@ -814,19 +786,10 @@ def customer_pay(job_id, token):
         "SELECT * FROM jobs WHERE job_id=? AND payment_token=?", (job_id, token)
     ).fetchone()
     if not job:
-        return render_template('shared/payment_error.html',
-                               message="This payment link is invalid or has expired. "
-                                       "Please contact Maktronics for a new link."), 404
+        return "Invalid or expired payment link.", 404
     if job['payment_status'] == 'paid':
         return render_template('shared/payment_success.html', job=job, already_paid=True)
-    if not job['razorpay_order_id']:
-        return render_template('shared/payment_error.html',
-                               message="Payment order not found. "
-                                       "Please ask Maktronics to regenerate your payment link."), 400
     amount = float(job['invoice_total_amount'] or job['total_amount'] or 0)
-    if amount <= 0:
-        return render_template('shared/payment_error.html',
-                               message="Invoice amount is zero. Please contact Maktronics."), 400
     return render_template(
         'shared/customer_payment.html',
         job=job,
@@ -844,27 +807,13 @@ def verify_payment(job_id):
     razorpay_payment_id = data.get('razorpay_payment_id', '')
     razorpay_signature  = data.get('razorpay_signature', '')
 
-    if not razorpay_order_id or not razorpay_payment_id or not razorpay_signature:
-        return jsonify({'status': 'error', 'message': 'Missing payment fields'}), 400
-
-    # Verify the job exists and order_id matches
-    job = db.execute("SELECT * FROM jobs WHERE job_id=? AND razorpay_order_id=?",
-                     (job_id, razorpay_order_id)).fetchone()
-    if not job:
-        return jsonify({'status': 'error', 'message': 'Order not found for this job'}), 400
-
-    # Already paid? Return success redirect (idempotent)
-    if job['payment_status'] == 'paid':
-        return jsonify({'status': 'success', 'redirect': url_for('payment_success', job_id=job_id)})
-
-    # Verify Razorpay HMAC signature
     body = f"{razorpay_order_id}|{razorpay_payment_id}".encode()
     expected_sig = hmac.new(
         RAZORPAY_KEY_SECRET.encode(), body, hashlib.sha256
     ).hexdigest()
 
     if not hmac.compare_digest(expected_sig, razorpay_signature):
-        return jsonify({'status': 'error', 'message': 'Signature verification failed'}), 400
+        return jsonify({'status': 'error', 'message': 'Signature mismatch'}), 400
 
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     db.execute("""
@@ -892,48 +841,6 @@ def payment_success(job_id):
     if not job:
         return "Job not found.", 404
     return render_template('shared/payment_success.html', job=job, already_paid=False)
-
-
-@app.route('/admin/jobs/<job_id>/regenerate-payment-link', methods=['POST'])
-@admin_required
-def regenerate_payment_link(job_id):
-    """Utility: regenerate a fresh Razorpay order + token for any job."""
-    db = get_db()
-    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-    if not job:
-        flash('Job not found.', 'error')
-        return redirect(url_for('admin_jobs'))
-
-    amount_paise = int(float(job['invoice_total_amount'] or job['total_amount'] or 0) * 100)
-    if amount_paise <= 0:
-        flash('Cannot generate payment link: invoice amount is zero.', 'error')
-        return redirect(url_for('admin_job_detail', job_id=job_id))
-
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        order = razorpay_client.order.create({
-            'amount': amount_paise,
-            'currency': 'INR',
-            'receipt': job_id[:40],
-            'notes': {
-                'job_id': job_id,
-                'customer': job['customer_name'] or '',
-                'invoice': job['invoice_number'] or '',
-            }
-        })
-        token = uuid.uuid4().hex
-        pay_link = url_for('customer_pay', job_id=job_id, token=token, _external=True)
-        db.execute("""
-            UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
-            WHERE job_id=?
-        """, (order['id'], token, pay_link, now, job_id))
-        db.commit()
-        log_action(db, job_id, 'Payment Link Regenerated', session['user_id'],
-                   f'New Order: {order["id"]}, Amount: ₹{amount_paise / 100:.2f}')
-        flash(f'✅ New payment link: {pay_link}', 'success')
-    except Exception as e:
-        flash(f'Razorpay error: {str(e)}', 'error')
-    return redirect(url_for('admin_job_detail', job_id=job_id))
 
 
 @app.route('/razorpay/webhook', methods=['POST'])
@@ -973,4 +880,4 @@ def razorpay_webhook():
 init_db()  
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5005)
+    app.run(debug=True, port=5010)
