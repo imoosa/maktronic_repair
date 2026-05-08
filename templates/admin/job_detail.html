@@ -253,7 +253,7 @@
   <div class="card-header" style="flex-wrap:wrap;gap:8px">
     <span class="card-title">🗺️ Repair Journey</span>
     {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
-    <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+    <span class="badge badge-{{ job.status }}" id="live-status-badge">{{ s.icon }} {{ s.label }}</span>
   </div>
   <div class="progress-track">
     {% for step in all_steps %}
@@ -276,11 +276,11 @@
     <div class="card-header">
         <span class="card-title">📋 Current Status</span>
         {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•', 'color': '#90A4AE'}) %}
-        <span class="status-pill" style="background: {{ s.color }}20; color: {{ s.color }}; border: 1px solid {{ s.color }}40;">
+        <span class="status-pill" id="live-status-pill" style="background: {{ s.color }}20; color: {{ s.color }}; border: 1px solid {{ s.color }}40;">
             {{ s.icon }} {{ s.label }}
         </span>
     </div>
-    <div style="font-size: 13px; color: var(--muted);">
+    <div id="live-status-hint" style="font-size: 13px; color: var(--muted);">
         {% if job.status == 'sent_for_inspection' %}
             🔍 Awaiting technician inspection
         {% elif job.status == 'inspection_completed' %}
@@ -399,17 +399,17 @@
         {% if job.repair_findings %}
         <tr><td style="padding:6px 0;color:var(--muted)">Findings</td><td style="padding:6px 0">{{ job.repair_findings }}</td></tr>
         {% endif %}
-        <tr><td style="padding:6px 0;color:var(--muted)">Parts</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.parts_cost or 0) }}</td></tr>
-        <tr><td style="padding:6px 0;color:var(--muted)">Labour</td><td style="padding:6px 0">₹{{ "%.2f"|format(job.labour_cost or 0) }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Parts</td><td id="live-parts" style="padding:6px 0">₹{{ "%.2f"|format(job.parts_cost or 0) }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Labour</td><td id="live-labour" style="padding:6px 0">₹{{ "%.2f"|format(job.labour_cost or 0) }}</td></tr>
         <tr style="border-top:1px solid var(--border)">
           <td style="padding:10px 0;color:var(--text);font-weight:700">Total</td>
-          <td style="padding:10px 0;color:var(--green);font-weight:700;font-size:16px">₹{{ "%.2f"|format(job.total_amount or 0) }}</td>
+          <td id="live-total" style="padding:10px 0;color:var(--green);font-weight:700;font-size:16px">₹{{ "%.2f"|format(job.total_amount or 0) }}</td>
         </tr>
         {% if job.invoice_number %}
-        <tr><td style="padding:6px 0;color:var(--muted)">Invoice #</td><td style="padding:6px 0"><code style="font-size:11px;color:var(--accent)">{{ job.invoice_number }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Invoice #</td><td style="padding:6px 0"><code id="live-invoice" style="font-size:11px;color:var(--accent)">{{ job.invoice_number }}</code></td></tr>
         {% endif %}
         <tr><td style="padding:6px 0;color:var(--muted)">Payment</td>
-          <td style="padding:6px 0">
+          <td id="live-payment-status" style="padding:6px 0">
             {% if job.payment_status == 'paid' %}
             <span class="badge badge-delivered">✅ Paid</span>
             {% else %}
@@ -514,7 +514,7 @@
     <div class="card">
       <div class="card-header"><span class="card-title">📜 Activity Log</span></div>
       {% if logs %}
-      <div class="timeline">
+      <div class="timeline" id="live-activity-log">
         {% for log in logs %}
         <div class="timeline-item">
           <div class="timeline-meta">{{ log.user_name or 'System' }} · {{ log.created_at[:16] }}</div>
@@ -756,5 +756,177 @@ function printBarcode() {
   window.print();
   setTimeout(function() { area.style.display = 'none'; }, 500);
 }
+
+/* ─── LIVE STATUS POLLING ─────────────────────────────────────────────────────
+   Polls /api/job/<id>/status every 10 seconds and updates the page in-place
+   without a full reload. Updates: status badge, current-status card,
+   financials, activity log, and the notification bell count.
+──────────────────────────────────────────────────────────────────────────────*/
+(function() {
+  var JOB_ID = "{{ job.job_id }}";
+  var POLL_INTERVAL = 10000; // 10 seconds
+  var lastStatus = "{{ job.status }}";
+  var lastUpdatedAt = "{{ job.updated_at }}";
+
+  // ── Status label/icon map (mirrors STATUS_FLOW in app.py) ──────────────────
+  var STATUS_FLOW = {
+    sent_for_inspection: { label: 'Sent for Inspection', icon: '🔍', color: '#FFB74D' },
+    not_repairable:      { label: 'Not Repairable',      icon: '❌', color: '#EF5350' },
+    estimate_sent:       { label: 'Estimate Sent',        icon: '📄', color: '#FFD54F' },
+    estimate_approved:   { label: 'Estimate Approved',    icon: '👍', color: '#4DB6AC' },
+    estimate_rejected:   { label: 'Estimate Rejected',    icon: '🚫', color: '#EF5350' },
+    sent_for_repair:     { label: 'Sent for Repair',      icon: '🔧', color: '#F06292' },
+    repair_done:         { label: 'Repair Done',          icon: '✅', color: '#4DB6AC' },
+    invoice_uploaded:    { label: 'Invoice Uploaded',     icon: '📎', color: '#AED581' },
+    payment_received:    { label: 'Payment Received',     icon: '💰', color: '#66BB6A' },
+    dispatched:          { label: 'Dispatched',           icon: '🚚', color: '#4DD0E1' },
+    closed:              { label: 'Closed',               icon: '🔒', color: '#90A4AE' },
+  };
+
+  var STATUS_HINT = {
+    sent_for_inspection: '🔍 Awaiting technician inspection',
+    estimate_sent:       '📄 Estimate sent — waiting for admin approval',
+    estimate_approved:   '👍 Estimate approved — ready for repair',
+    sent_for_repair:     '🔧 Device is being repaired',
+    repair_done:         '✅ Repair complete — awaiting invoice upload',
+    invoice_uploaded:    '📎 Invoice uploaded — pending payment',
+    payment_received:    '💰 Payment received — ready for dispatch',
+    dispatched:          '🚚 Dispatched — in transit',
+    closed:              '🔒 Job completed',
+    not_repairable:      '❌ Item cannot be repaired',
+    estimate_rejected:   '🚫 Estimate rejected by admin',
+  };
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function fmt(v) { return v != null ? parseFloat(v).toFixed(2) : '0.00'; }
+
+  function flash(el) {
+    el.style.transition = 'background 0.4s';
+    el.style.background = 'rgba(74,158,255,0.18)';
+    setTimeout(function() { el.style.background = ''; }, 1200);
+  }
+
+  // ── Update status badge (header + current-status card) ────────────────────
+  function updateStatusBadge(status) {
+    var s = STATUS_FLOW[status] || { label: status, icon: '•', color: '#90A4AE' };
+
+    // Badge in the Repair Journey card header
+    var badge = document.getElementById('live-status-badge');
+    if (badge) {
+      badge.textContent = s.icon + ' ' + s.label;
+      flash(badge);
+    }
+
+    // Current Status card
+    var pill = document.getElementById('live-status-pill');
+    if (pill) {
+      pill.textContent = s.icon + ' ' + s.label;
+      pill.style.background = s.color + '20';
+      pill.style.color = s.color;
+      pill.style.border = '1px solid ' + s.color + '40';
+    }
+    var hint = document.getElementById('live-status-hint');
+    if (hint) {
+      hint.textContent = STATUS_HINT[status] || status;
+    }
+  }
+
+  // ── Update activity log ────────────────────────────────────────────────────
+  function updateLogs(logs) {
+    var container = document.getElementById('live-activity-log');
+    if (!container || !logs || !logs.length) return;
+    var html = '';
+    logs.forEach(function(l) {
+      html += '<div class="timeline-item">' +
+        '<div class="timeline-meta">' + l.user_name + ' · ' + (l.created_at || '').slice(0,16) + '</div>' +
+        '<div class="timeline-content">' + l.action + '</div>' +
+        (l.details ? '<div class="timeline-details">' + l.details + '</div>' : '') +
+        '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  // ── Update finance section ─────────────────────────────────────────────────
+  function updateFinance(data) {
+    var el;
+    el = document.getElementById('live-parts');   if (el) el.textContent = '₹' + fmt(data.parts_cost);
+    el = document.getElementById('live-labour');  if (el) el.textContent = '₹' + fmt(data.labour_cost);
+    el = document.getElementById('live-total');   if (el) el.textContent = '₹' + fmt(data.total_amount);
+    el = document.getElementById('live-invoice'); if (el && data.invoice_number) el.textContent = data.invoice_number;
+    el = document.getElementById('live-payment-status');
+    if (el) {
+      if (data.payment_status === 'paid') {
+        el.innerHTML = '<span class="badge badge-delivered">✅ Paid</span>';
+      } else {
+        var ps = (data.payment_status || 'pending').replace(/_/g,' ');
+        el.innerHTML = '<span class="badge badge-payment_pending">⏳ ' + ps.charAt(0).toUpperCase() + ps.slice(1) + '</span>';
+      }
+    }
+  }
+
+  // ── Update notification bell count ─────────────────────────────────────────
+  function updateBell(count) {
+    var badges = document.querySelectorAll('.notif-badge, [data-notif-badge]');
+    badges.forEach(function(b) {
+      if (count > 0) {
+        b.textContent = count;
+        b.style.display = '';
+      } else {
+        b.style.display = 'none';
+      }
+    });
+  }
+
+  // ── Show a toast banner when status changes ────────────────────────────────
+  function showToast(msg) {
+    var t = document.getElementById('live-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'live-toast';
+      t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);' +
+        'background:var(--blue);color:#fff;padding:10px 20px;border-radius:10px;' +
+        'font-size:13px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.3);' +
+        'transition:opacity .4s;white-space:nowrap';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.opacity = '1';
+    clearTimeout(t._hide);
+    t._hide = setTimeout(function() { t.style.opacity = '0'; }, 3500);
+  }
+
+  // ── Main poll function ─────────────────────────────────────────────────────
+  function poll() {
+    fetch('/api/job/' + JOB_ID + '/status', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data) return;
+
+        // Detect status change
+        if (data.status !== lastStatus) {
+          var s = STATUS_FLOW[data.status] || { label: data.status, icon: '•' };
+          showToast('Status updated: ' + s.icon + ' ' + s.label);
+          lastStatus = data.status;
+        }
+
+        updateStatusBadge(data.status);
+        updateLogs(data.logs);
+        updateFinance(data);
+      })
+      .catch(function() { /* silent — will retry next cycle */ });
+
+    // Also refresh unread notification count
+    fetch('/api/notifications/unread_count', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) { if (d) updateBell(d.count); })
+      .catch(function() {});
+  }
+
+  // Kick off polling after page load
+  setTimeout(function() {
+    poll();
+    setInterval(poll, POLL_INTERVAL);
+  }, 2000);
+})();
 </script>
 {% endblock %}

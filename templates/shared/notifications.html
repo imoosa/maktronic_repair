@@ -1,0 +1,207 @@
+{% extends 'shared/base.html' %}
+{% block title %}Notifications{% endblock %}
+{% block page_title %}🔔 Notifications{% endblock %}
+{% block page_sub %}Your recent alerts{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Management</div>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+</div>
+{% endblock %}
+
+
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">All Notifications</span>
+    <span id="live-notif-count" style="font-size:12px;color:var(--muted)">
+      {% if notifications %}{{ notifications|length }} total{% endif %}
+    </span>
+  </div>
+
+  <div id="live-notif-list" style="display:flex;flex-direction:column;gap:0">
+    {% if notifications %}
+      {% for notif in notifications %}
+      <div style="
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        {% if not notif.is_read %}background:rgba(74,158,255,0.04);{% endif %}
+      ">
+        <div style="font-size:22px;flex-shrink:0;margin-top:2px">
+          {% if '❌' in notif.message %}❌
+          {% elif '✅' in notif.message %}✅
+          {% elif '📄' in notif.message %}📄
+          {% elif '🚫' in notif.message %}🚫
+          {% elif '🔧' in notif.message %}🔧
+          {% elif '💰' in notif.message %}💰
+          {% elif '📦' in notif.message %}📦
+          {% elif '📋' in notif.message %}📋
+          {% else %}🔔{% endif %}
+        </div>
+        <div style="flex:1">
+          <div style="font-size:13px;color:var(--text);line-height:1.5">{{ notif.message }}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">
+            {{ notif.created_at[:16] }}
+            {% if not notif.is_read %}<span style="color:var(--blue);margin-left:8px">● New</span>{% endif %}
+          </div>
+          <a href="{% if session.role == 'admin' %}/admin/jobs/{{ notif.job_id }}{% else %}/tech/jobs/{{ notif.job_id }}{% endif %}"
+             style="font-size:12px;color:var(--blue);text-decoration:none;margin-top:4px;display:inline-block">
+            View Job {{ notif.job_id }} →
+          </a>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+    <div id="live-notif-empty" style="text-align:center;padding:40px 20px;color:var(--muted)">
+      <div style="font-size:40px;margin-bottom:12px">🔔</div>
+      <div style="font-size:14px">No notifications yet</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ─── LIVE NOTIFICATION POLLING ───────────────────────────────────────────────
+   Polls /api/notifications/poll every 15 seconds and re-renders the list
+   in-place without a page reload. Shows a subtle flash on new arrivals.
+──────────────────────────────────────────────────────────────────────────────*/
+(function() {
+  var POLL_INTERVAL = 15000; // 15 seconds
+  var knownIds = new Set();
+  var role = "{{ session.role }}";
+
+  // Seed known IDs from initial server-render so we can detect truly new ones
+  document.querySelectorAll('[data-notif-id]').forEach(function(el) {
+    knownIds.add(el.getAttribute('data-notif-id'));
+  });
+
+  function iconFor(msg) {
+    if (msg.indexOf('❌') !== -1) return '❌';
+    if (msg.indexOf('✅') !== -1) return '✅';
+    if (msg.indexOf('📄') !== -1) return '📄';
+    if (msg.indexOf('🚫') !== -1) return '🚫';
+    if (msg.indexOf('🔧') !== -1) return '🔧';
+    if (msg.indexOf('💰') !== -1) return '💰';
+    if (msg.indexOf('📦') !== -1) return '📦';
+    if (msg.indexOf('📋') !== -1) return '📋';
+    return '🔔';
+  }
+
+  function buildRow(n, isNew) {
+    var jobUrl = (role === 'admin')
+      ? '/admin/jobs/' + n.job_id
+      : '/tech/jobs/' + n.job_id;
+    var ts = (n.created_at || '').slice(0, 16);
+    var newDot = !n.is_read
+      ? '<span style="color:var(--blue);margin-left:8px">● New</span>'
+      : '';
+    var highlight = isNew
+      ? 'background:rgba(74,158,255,0.12);transition:background 1.5s;'
+      : (!n.is_read ? 'background:rgba(74,158,255,0.04);' : '');
+
+    return '<div data-notif-id="' + n.id + '" style="padding:14px 0;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:flex-start;' + highlight + '">' +
+      '<div style="font-size:22px;flex-shrink:0;margin-top:2px">' + iconFor(n.message) + '</div>' +
+      '<div style="flex:1">' +
+        '<div style="font-size:13px;color:var(--text);line-height:1.5">' + n.message + '</div>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + ts + newDot + '</div>' +
+        '<a href="' + jobUrl + '" style="font-size:12px;color:var(--blue);text-decoration:none;margin-top:4px;display:inline-block">View Job ' + n.job_id + ' →</a>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function updateBell(count) {
+    document.querySelectorAll('.notif-badge,[data-notif-badge]').forEach(function(b) {
+      b.textContent = count;
+      b.style.display = count > 0 ? '' : 'none';
+    });
+  }
+
+  function poll() {
+    fetch('/api/notifications/poll', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data || !data.notifications) return;
+
+        var list = document.getElementById('live-notif-list');
+        var empty = document.getElementById('live-notif-empty');
+        var countEl = document.getElementById('live-notif-count');
+
+        if (!list) return;
+
+        if (!data.notifications.length) {
+          if (!empty) {
+            list.innerHTML = '<div id="live-notif-empty" style="text-align:center;padding:40px 20px;color:var(--muted)">' +
+              '<div style="font-size:40px;margin-bottom:12px">🔔</div>' +
+              '<div style="font-size:14px">No notifications yet</div>' +
+              '</div>';
+          }
+          if (countEl) countEl.textContent = '';
+          updateBell(0);
+          return;
+        }
+
+        // Check for truly new notifications
+        var hasNew = false;
+        data.notifications.forEach(function(n) {
+          if (!knownIds.has(String(n.id))) hasNew = true;
+        });
+
+        if (hasNew) {
+          // Full re-render
+          var html = '';
+          data.notifications.forEach(function(n) {
+            var isNew = !knownIds.has(String(n.id));
+            html += buildRow(n, isNew);
+            knownIds.add(String(n.id));
+          });
+          list.innerHTML = html;
+
+          // Fade new highlights after 2s
+          setTimeout(function() {
+            list.querySelectorAll('[data-notif-id]').forEach(function(el) {
+              el.style.background = '';
+            });
+          }, 2000);
+        } else {
+          // Just update read status dots without full re-render
+          data.notifications.forEach(function(n) {
+            var row = list.querySelector('[data-notif-id="' + n.id + '"]');
+            if (row && n.is_read) {
+              var dot = row.querySelector('span[style*="var(--blue)"]');
+              if (dot) dot.remove();
+              row.style.background = '';
+            }
+          });
+        }
+
+        if (countEl) countEl.textContent = data.notifications.length + ' total';
+        updateBell(data.unread_count);
+      })
+      .catch(function() {});
+  }
+
+  // Mark notifications as read via API when page is viewed (server does it on page load,
+  // but polling keeps the bell in sync without navigating away)
+  fetch('/notifications/mark_read_all', { method: 'POST', credentials: 'same-origin' })
+    .catch(function() {});
+
+  // Start polling
+  setTimeout(function() {
+    poll();
+    setInterval(poll, POLL_INTERVAL);
+  }, 3000);
+})();
+</script>
+{% endblock %}

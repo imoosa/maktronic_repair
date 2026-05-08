@@ -201,34 +201,6 @@ tbody tr:hover{background:var(--bg3)}
 .btn-sm{padding:6px 12px;font-size:12px}
 .btn-xs{padding:4px 10px;font-size:11px}
 
-/* ── NOTIFICATION BELL ── */
-.notif-btn{
-  position:relative;
-  background:var(--bg3);
-  border:1px solid var(--border);
-  color:var(--text);
-  width:36px;height:36px;
-  border-radius:8px;
-  cursor:pointer;
-  font-size:17px;
-  display:flex;align-items:center;justify-content:center;
-  transition:all .2s;
-  flex-shrink:0;
-  text-decoration:none;
-}
-.notif-btn:hover{background:var(--border)}
-.notif-badge{
-  position:absolute;top:-5px;right:-5px;
-  background:var(--red);color:#fff;
-  font-size:9px;font-weight:800;
-  min-width:16px;height:16px;
-  border-radius:8px;padding:0 3px;
-  display:flex;align-items:center;justify-content:center;
-  font-family:var(--font-body);
-  line-height:1;
-  border:2px solid var(--bg2);
-}
-
 /* ── THEME TOGGLE BUTTON ── */
 .theme-btn{
   background:var(--bg3);
@@ -562,15 +534,6 @@ textarea.form-control{resize:vertical;min-height:80px}
       </div>
       <div class="topbar-right">
         {% block topbar_actions %}{% endblock %}
-        {% if session.user_id %}
-        <a href="/notifications" class="notif-btn" title="Notifications">
-          🔔
-          {% set uc = unread_notif_count() %}
-          {% if uc > 0 %}
-          <span class="notif-badge">{{ uc if uc < 100 else '99+' }}</span>
-          {% endif %}
-        </a>
-        {% endif %}
         <button class="theme-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle theme">
           <span id="theme-icon">☀️</span>
           <span class="theme-label" id="theme-label">Light</span>
@@ -616,12 +579,6 @@ textarea.form-control{resize:vertical;min-height:80px}
       <span>Users</span>
     </a>
     {% endif %}
-    <a href="/notifications" class="bottom-nav-item" style="position:relative">
-      <span class="bn-icon">🔔</span>
-      {% set uc = unread_notif_count() %}
-      {% if uc > 0 %}<span style="position:absolute;top:4px;right:8px;background:var(--red);color:#fff;font-size:9px;font-weight:800;min-width:15px;height:15px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px;border:2px solid var(--bg2)">{{ uc }}</span>{% endif %}
-      <span>Alerts</span>
-    </a>
     <a href="/logout" class="bottom-nav-item">
       <span class="bn-icon">🚪</span>
       <span>Logout</span>
@@ -634,12 +591,6 @@ textarea.form-control{resize:vertical;min-height:80px}
     <a href="/tech/jobs" class="bottom-nav-item {% block bn_tech_jobs %}{% endblock %}">
       <span class="bn-icon">🔧</span>
       <span>My Jobs</span>
-    </a>
-    <a href="/notifications" class="bottom-nav-item" style="position:relative">
-      <span class="bn-icon">🔔</span>
-      {% set uc = unread_notif_count() %}
-      {% if uc > 0 %}<span style="position:absolute;top:4px;right:8px;background:var(--red);color:#fff;font-size:9px;font-weight:800;min-width:15px;height:15px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px;border:2px solid var(--bg2)">{{ uc }}</span>{% endif %}
-      <span>Alerts</span>
     </a>
     <a href="/logout" class="bottom-nav-item">
       <span class="bn-icon">🚪</span>
