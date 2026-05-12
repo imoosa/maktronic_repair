@@ -1,0 +1,1323 @@
+{% extends 'shared/base.html' %}
+{% block title %}{{ job.job_id }} — Maktronics{% endblock %}
+{% block page_title %}{{ job.job_id }}{% endblock %}
+{% block page_sub %}{{ job.customer_name }} · {{ job.item_type }}{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
+</div>
+
+{% endblock %}
+
+{% block bn_jobs %}active{% endblock %}
+
+{% block topbar_actions %}
+{% if job.invoice_number %}
+<a href="/admin/jobs/{{ job.job_id }}/invoice" target="_blank" class="btn btn-secondary btn-sm">📄 Invoice</a>
+{% endif %}
+{% endblock %}
+
+{% block mobile_actions %}
+<div class="mobile-action-bar">
+  <a href="/admin/jobs" class="btn btn-secondary">← All Jobs</a>
+  {% if job.invoice_number %}
+  <a href="/admin/jobs/{{ job.job_id }}/invoice" target="_blank" class="btn btn-secondary">📄 Invoice</a>
+  {% endif %}
+  <button onclick="printBarcode()" class="btn btn-secondary">🏷️ Print</button>
+</div>
+{% endblock %}
+
+{% block head_styles %}
+<style>
+  /* =============================================
+     JOB DETAIL SPECIFIC STYLES (mobile fixed)
+  ============================================= */
+  
+  /* Main container - grid layout for desktop, single column for mobile */
+  .job-detail-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  
+  /* Force cards to be consistent */
+  .job-detail-container .card {
+    height: auto;
+    overflow: visible;
+  }
+  
+  /* Photo grid responsive */
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+  }
+  
+  .photo-thumb {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    transition: all 0.2s;
+    cursor: zoom-in;
+  }
+  
+  .photo-thumb:hover {
+    transform: scale(1.02);
+    border-color: var(--accent);
+  }
+  
+  /* Barcode container ensures no overflow on small screens */
+  #barcode-card {
+    overflow-x: auto;
+  }
+  
+  #barcode-svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+  }
+  
+  /* Action buttons in desktop panel */
+  .action-card-desktop .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  /* Make actions always accessible on mobile via sticky panel */
+  @media (max-width: 768px) {
+    .job-detail-container {
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    
+    .job-detail-container > div {
+      width: 100%;
+    }
+    
+    /* Mobile sticky actions panel */
+    .actions-sticky-mobile {
+      position: sticky;
+      bottom: var(--bottom-nav-h, 64px);
+      z-index: 80;
+      margin: 0 -12px;
+      padding: 12px 12px;
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    
+    .actions-sticky-mobile .btn {
+      flex: 1;
+      min-width: 120px;
+      justify-content: center;
+      font-size: 12px;
+      padding: 10px 8px;
+    }
+    
+    .action-card-desktop {
+      display: none !important;
+    }
+    
+    /* Improve table readability on small screens */
+    .card td {
+      word-break: break-word;
+      white-space: normal;
+    }
+    
+    /* Assign technician form on mobile */
+    .card form {
+      flex-direction: column;
+    }
+    
+    .card form select,
+    .card form button {
+      width: 100%;
+    }
+    
+    /* Photo grid more compact */
+    .photo-grid {
+      grid-template-columns: repeat(auto-fill, minmax(75px, 1fr));
+      gap: 8px;
+    }
+    
+    /* Technician info area */
+    .tech-assign-area {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+  
+  @media (min-width: 769px) {
+    .actions-sticky-mobile {
+      display: none;
+    }
+  }
+  
+  /* Extra small devices (<=480px) */
+  @media (max-width: 480px) {
+    .photo-grid {
+      grid-template-columns: repeat(auto-fill, minmax(65px, 1fr));
+    }
+    
+    .stat-value {
+      font-size: 20px;
+    }
+    
+    .card-title {
+      font-size: 13px;
+    }
+    
+    .badge {
+      font-size: 10px;
+      padding: 2px 7px;
+    }
+  }
+  
+  /* Timeline improvements */
+  .timeline {
+    max-height: 380px;
+    overflow-y: auto;
+    padding-right: 8px;
+  }
+  
+  .timeline-content {
+    font-size: 13px;
+  }
+  
+  .timeline-meta {
+    font-size: 11px;
+  }
+  
+  @media (max-width: 768px) {
+    .timeline {
+      max-height: 300px;
+    }
+    .timeline-content {
+      font-size: 12px;
+    }
+    .timeline-meta {
+      font-size: 10px;
+    }
+  }
+  
+  /* Payment option checkbox cards */
+  .payment-option-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
+    font-size: 13px;
+    background: var(--bg2);
+    user-select: none;
+    position: relative;
+  }
+  .payment-option-card:hover {
+    border-color: rgba(74,158,255,.5);
+    background: rgba(74,158,255,.04);
+  }
+  .payment-option-card:has(input:checked) {
+    border-color: var(--blue);
+    background: rgba(74,158,255,.09);
+    box-shadow: 0 0 0 1px rgba(74,158,255,.25);
+  }
+  /* Hide native checkbox — we draw a custom tick box */
+  .payment-option-card input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  /* Custom tick box */
+  .pom-tick {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+    font-size: 13px;
+    color: transparent;
+  }
+  .payment-option-card:has(input:checked) .pom-tick {
+    border-color: var(--blue);
+    background: var(--blue);
+    color: #fff;
+  }
+  .payment-option-card .pom-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    width: 28px;
+    text-align: center;
+  }
+  .payment-option-card strong {
+    display: block;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.3;
+  }
+  .payment-option-card small {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 1px;
+  }
+  #payment-options-error {
+    display: none;
+    color: #EF5350;
+    font-size: 12px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: rgba(239,83,80,.08);
+    border-radius: 6px;
+  }
+
+  /* ── Unified Invoice Panel styles ── */
+  .form-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1.2px; color: var(--muted); margin: 14px 0 8px;
+  }
+  .payment-method-group {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px;
+  }
+  @media (max-width: 480px) { .payment-method-group { grid-template-columns: 1fr; } }
+  .payment-option { cursor: pointer; }
+  .payment-option input[type="radio"] { display: none; }
+  .payment-option-inner {
+    display: flex; align-items: center; gap: 10px;
+    border: 2px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; transition: border-color .15s, background .15s;
+  }
+  .payment-option input:checked + .payment-option-inner {
+    border-color: var(--accent); background: rgba(74,158,255,.08);
+  }
+  .payment-option-icon { font-size: 20px; flex-shrink: 0; }
+  .payment-option-title { font-size: 13px; font-weight: 600; }
+  .payment-option-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  /* Print styles for barcode sticker */
+  @media print {
+    @page {
+      size: 3in 1.5in;
+      margin: 0;
+    }
+    body * {
+      visibility: hidden !important;
+    }
+    #barcode-print-area,
+    #barcode-print-area * {
+      visibility: visible !important;
+    }
+    #barcode-print-area {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 3in !important;
+      height: 1.5in !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #fff !important;
+      padding: 4px 8px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- PROGRESS TRACKER -->
+{% set all_steps = ['received','barcode_gen','sent_for_inspection','inspection_completed','in_repair','repair_done','invoice_uploaded','payment_received','dispatched','delivered','closed'] %}
+{% set step_idx = all_steps.index(job.status) if job.status in all_steps else 0 %}
+<div class="card mb-6" style="overflow:hidden">
+  <div class="card-header" style="flex-wrap:wrap;gap:8px">
+    <span class="card-title">🗺️ Repair Journey</span>
+    {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+    <span class="badge badge-{{ job.status }}" id="live-status-badge">{{ s.icon }} {{ s.label }}</span>
+  </div>
+  <div class="progress-track">
+    {% for step in all_steps %}
+    {% set si = loop.index0 %}
+    {% if not loop.first %}
+    <div class="step-line {% if si <= step_idx %}done{% endif %}"></div>
+    {% endif %}
+    <div class="progress-step">
+      <div class="step-dot {% if si < step_idx %}done{% elif si == step_idx %}current{% endif %}" title="{{ status_flow.get(step,{}).get('label',step) }}">
+        {% if si < step_idx %}✓{% else %}{{ status_flow.get(step,{}).get('icon','•') }}{% endif %}
+        <span class="step-label">{{ status_flow.get(step,{}).get('label',step) }}</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Add this after the progress tracker -->
+<div class="card mb-4">
+    <div class="card-header">
+        <span class="card-title">📋 Current Status</span>
+        {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•', 'color': '#90A4AE'}) %}
+        <span class="status-pill" id="live-status-pill" style="background: {{ s.color }}20; color: {{ s.color }}; border: 1px solid {{ s.color }}40;">
+            {{ s.icon }} {{ s.label }}
+        </span>
+    </div>
+    <div id="live-status-hint" style="font-size: 13px; color: var(--muted);">
+        {% if job.status == 'sent_for_inspection' %}
+            🔍 Awaiting technician inspection
+        {% elif job.status == 'inspection_completed' %}
+            ✅ Inspection complete - waiting for estimate
+        {% elif job.status == 'estimate_sent' %}
+            📄 Estimate sent - waiting for admin approval
+        {% elif job.status == 'estimate_approved' %}
+            👍 Estimate approved - ready for repair
+        {% elif job.status == 'in_repair' %}
+            🔧 Device is being repaired
+        {% elif job.status == 'repair_done' %}
+            ✅ Repair complete - awaiting invoice upload
+        {% elif job.status == 'invoice_uploaded' %}
+            📎 Invoice uploaded - pending payment
+        {% elif job.status == 'payment_received' %}
+            💰 Payment received - ready for dispatch
+        {% elif job.status == 'dispatched' %}
+            🚚 Dispatched - in transit
+        {% elif job.status == 'delivered' %}
+            🏠 Delivered - ready to close
+        {% elif job.status == 'closed' %}
+            🔒 Job completed
+        {% endif %}
+    </div>
+</div>
+
+<!-- WhatsApp Notification Status -->
+<div class="card mb-4" style="border-left: 3px solid #25D366;">
+  <div class="card-header">
+    <span class="card-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="#25D366" style="vertical-align:middle;margin-right:4px"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.089.537 4.055 1.474 5.765L0 24l6.388-1.451A11.945 11.945 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.8 9.8 0 01-4.99-1.364l-.356-.213-3.793.861.9-3.697-.232-.374A9.773 9.773 0 012.182 12C2.182 6.57 6.57 2.182 12 2.182S21.818 6.57 21.818 12 17.43 21.818 12 21.818z"/></svg>
+      WhatsApp Notifications
+    </span>
+    <span style="font-size:11px;color:#25D366;font-weight:500">● Auto-sent</span>
+  </div>
+  <div style="font-size:12px;color:var(--muted);line-height:1.8">
+    {% set wa_events = {
+      'sent_for_inspection': '✅ Job Received confirmation sent to client',
+      'estimate_sent': '✅ Estimate details sent to client for approval',
+      'estimate_approved': '✅ Approval + Repair-start notice sent to client',
+      'estimate_rejected': '✅ Rejection notice sent to client',
+      'not_repairable': '✅ Not-repairable notice sent to client',
+      'repair_done': '✅ Repair complete notice sent to client',
+      'invoice_uploaded': '✅ Repair done notice sent to client',
+      'payment_received': '✅ Payment confirmed',
+      'dispatched': '✅ Dispatch + tracking details sent to client',
+      'closed': '✅ Job closed thank-you sent to client',
+    } %}
+    {% for status_key, wa_msg in wa_events.items() %}
+      {% set step_done = all_steps.index(status_key) <= step_idx if status_key in all_steps else False %}
+      <div style="display:flex;align-items:center;gap:6px;padding:2px 0;opacity:{{ '1' if step_done else '0.35' }}">
+        <span>{{ '🟢' if step_done else '⚪' }}</span>
+        <span>{{ wa_msg }}</span>
+      </div>
+    {% endfor %}
+    {% if not job.customer_phone %}
+    <div style="margin-top:6px;padding:6px 8px;background:rgba(239,83,80,.1);border-radius:6px;color:#EF5350;font-size:11px;">
+      ⚠️ No phone number on file — WhatsApp messages cannot be sent
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- MAIN GRID (desktop: 2 columns, mobile: auto-stack) -->
+<div class="job-detail-container">
+
+  <!-- LEFT COLUMN -->
+  <div>
+    <!-- Customer Info -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">👤 Customer</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Name</td><td style="padding:6px 0;font-weight:500">{{ job.customer_name or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Phone</td>
+          <td style="padding:6px 0">
+            <a href="tel:{{ job.customer_phone }}" style="color:var(--blue)">{{ job.customer_phone or '—' }}</a>
+          </td>
+         </tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Email</td><td style="padding:6px 0">{{ job.customer_email or '—' }}</td></tr>
+       </table>
+    </div>
+
+    <!-- Item Info -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">📦 Item</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:90px">Type</td><td style="padding:6px 0;font-weight:500">{{ job.item_type or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Job ID</td><td style="padding:6px 0"><code style="font-size:11px;color:var(--accent)">{{ job.job_id }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Problem</td><td style="padding:6px 0">{{ job.item_description or '—' }}</td></tr>
+        {% if job.notes %}<tr><td style="padding:6px 0;color:var(--muted)">Notes</td><td style="padding:6px 0">{{ job.notes }}</td></tr>{% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Received</td><td style="padding:6px 0;font-size:11px;color:var(--muted)">{{ job.received_at[:16] }}</td></tr>
+      </table>
+    </div>
+
+    <!-- Barcode -->
+    <div class="card mb-4" id="barcode-card">
+      <div class="card-header">
+        <span class="card-title">🏷️ Barcode</span>
+        <button onclick="printBarcode()" class="btn btn-secondary btn-sm">
+          🖨️ Print
+        </button>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;padding:12px 4px 4px;gap:6px;overflow:hidden;width:100%">
+        <div style="width:100%;overflow:hidden;display:flex;justify-content:center">
+          <svg id="barcode-svg" style="max-width:100%;height:auto;display:block"></svg>
+        </div>
+        <div style="font-size:10px;color:var(--muted);text-align:center;word-break:break-all;padding:0 4px">
+          {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Technician Assignment -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">👷 Technician</span></div>
+      <div style="font-size:14px;font-weight:500;margin-bottom:12px">{{ job.tech_name or 'Not Assigned' }}</div>
+      <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="hidden" name="action" value="assign_tech">
+        <select name="tech_id" class="form-control" style="flex:1;min-width:0">
+          {% for tech in technicians %}
+          <option value="{{ tech.id }}" {% if job.assigned_tech_id == tech.id %}selected{% endif %}>{{ tech.name }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-blue btn-sm">Assign</button>
+      </form>
+    </div>
+
+    <!-- Photos -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <span class="card-title">📸 Photos</span>
+        <span class="tag">{{ photos|length }}</span>
+      </div>
+      {% if photos %}
+      <div class="photo-grid">
+        {% for p in photos %}
+        <img src="/static/uploads/{{ p.photo_path }}" class="photo-thumb" onclick="window.open(this.src)" loading="lazy" alt="Job photo">
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No photos uploaded</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- RIGHT COLUMN -->
+  <div>
+    <!-- Financial -->
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">💰 Finance</span></div>
+      {% if job.repair_findings or job.total_amount > 0 %}
+      <table style="font-size:13px;width:100%">
+        {% if job.repair_findings %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Findings</td><td style="padding:6px 0">{{ job.repair_findings }}</td></tr>
+        {% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Parts</td><td id="live-parts" style="padding:6px 0">₹{{ "%.2f"|format(job.parts_cost or 0) }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Labour</td><td id="live-labour" style="padding:6px 0">₹{{ "%.2f"|format(job.labour_cost or 0) }}</td></tr>
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:10px 0;color:var(--text);font-weight:700">Total</td>
+          <td id="live-total" style="padding:10px 0;color:var(--green);font-weight:700;font-size:16px">₹{{ "%.2f"|format(job.total_amount or 0) }}</td>
+        </tr>
+        {% if job.invoice_number %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Invoice #</td><td style="padding:6px 0"><code id="live-invoice" style="font-size:11px;color:var(--accent)">{{ job.invoice_number }}</code></td></tr>
+        {% endif %}
+        <tr><td style="padding:6px 0;color:var(--muted)">Payment</td>
+          <td id="live-payment-status" style="padding:6px 0">
+            {% if job.payment_status == 'paid' %}
+            <span class="badge badge-delivered">✅ Paid</span>
+            {% else %}
+            <span class="badge badge-payment_pending">⏳ {{ job.payment_status|replace('_',' ')|title or 'Pending' }}</span>
+            {% endif %}
+          </td>
+        </tr>
+      </table>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">Repair not yet completed</div>
+      {% endif %}
+    </div>
+
+    <!-- Dispatch -->
+    {% if job.tracking_number %}
+    <div class="card mb-4">
+      <div class="card-header"><span class="card-title">🚚 Dispatch</span></div>
+      <table style="font-size:13px;width:100%">
+        <tr><td style="padding:6px 0;color:var(--muted);width:100px">Tracking #</td><td style="padding:6px 0"><code style="color:var(--accent)">{{ job.tracking_number }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Courier</td><td style="padding:6px 0">{{ job.courier_name or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Date</td><td style="padding:6px 0">{{ job.dispatch_date or '—' }}</td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Expected</td><td style="padding:6px 0">{{ job.expected_delivery or '—' }}</td></tr>
+        {% if job.delivered_at %}<tr><td style="padding:6px 0;color:var(--muted)">Delivered</td><td style="padding:6px 0;color:var(--green)">{{ job.delivered_at[:16] }}</td></tr>{% endif %}
+        {% if job.courier_receipt_path %}
+        <tr>
+          <td style="padding:6px 0;color:var(--muted)">LR / Receipt</td>
+          <td style="padding:6px 0">
+            <a href="/static/uploads/{{ job.courier_receipt_path }}" target="_blank"
+               class="btn btn-secondary btn-xs" style="font-size:11px">
+              📄 View LR
+            </a>
+          </td>
+        </tr>
+        {% endif %}
+      </table>
+    </div>
+    {% endif %}
+
+    <!-- ACTIONS PANEL (desktop only) -->
+    <div class="card mb-4 action-card-desktop">
+      <div class="card-header"><span class="card-title">⚡ Actions</span></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+
+        {# ── ADMIN: Job received → Send for Inspection ── #}
+        {% if job.status == 'received' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="send_for_inspection">
+          <button type="submit" class="btn btn-primary" style="width:100%">🔍 Send for Inspection</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: estimate_sent → Approve or Reject ── #}
+        {% if job.status == 'estimate_sent' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="approve_estimate">
+          <button type="submit" class="btn btn-success" style="width:100%">👍 Approve Estimate</button>
+        </form>
+        <button onclick="openModal('rejectEstimateModal')" class="btn btn-danger" style="width:100%">🚫 Reject Estimate</button>
+        {% endif %}
+
+        {# ── ADMIN: estimate_approved → Send for Repair (just signals tech) ── #}
+        {% if job.status == 'estimate_approved' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="start_repair">
+          <button type="submit" class="btn btn-primary" style="width:100%">🔧 Send for Repair</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: repair_done / invoice_uploaded → handled by inline panel below ── #}
+        {% if job.status in ['repair_done', 'invoice_uploaded'] %}
+        <div style="background:rgba(74,158,255,.08);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--muted)">
+          📋 Use the <strong style="color:var(--text)">Invoice &amp; Payment panel</strong> below to upload &amp; send.
+        </div>
+        {% endif %}
+        {% if job.payment_method and job.status not in ['repair_done','invoice_uploaded'] %}
+        <div style="background:rgba(74,158,255,.08);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--muted)">
+          💳 Accepted: <strong style="color:var(--text)">
+            {% for m in job.payment_method.split(',') %}
+              <span style="display:inline-block;background:rgba(74,158,255,.15);border-radius:4px;padding:1px 6px;margin:1px">{{ m.strip()|replace('_',' ')|title }}</span>
+            {% endfor %}
+          </strong>
+        </div>
+        {% endif %}
+
+        {# ── ADMIN: payment_received → Dispatch ── #}
+        {% if job.status == 'payment_received' %}
+        <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="width:100%">🚚 Dispatch Item</button>
+        {% endif %}
+
+        {# ── ADMIN: dispatched → Delivered ── #}
+        {% if job.status == 'dispatched' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="delivered">
+          <button type="submit" class="btn btn-success" style="width:100%">🏠 Mark Delivered</button>
+        </form>
+        {% endif %}
+
+        {# ── ADMIN: delivered → Close ── #}
+        {% if job.status == 'delivered' %}
+        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+          <input type="hidden" name="action" value="close">
+          <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
+        </form>
+        {% endif %}
+
+        {# ── Show payment link/method if already set ── #}
+        {% if job.payment_link %}
+        <div style="background:var(--bg3);border-radius:8px;padding:10px;font-size:11px;word-break:break-all;color:var(--blue)">
+          🔗 <strong>Payment Link:</strong><br>{{ job.payment_link }}
+        </div>
+        {% endif %}
+
+      </div>
+    </div>
+
+    <!-- ACTIVITY LOG -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">📜 Activity Log</span></div>
+      {% if logs %}
+      <div class="timeline" id="live-activity-log">
+        {% for log in logs %}
+        <div class="timeline-item">
+          <div class="timeline-meta">{{ log.user_name or 'System' }} · {{ log.created_at[:16] }}</div>
+          <div class="timeline-content">{{ log.action }}</div>
+          {% if log.details %}<div class="timeline-details">{{ log.details }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div style="color:var(--muted);font-size:13px">No activity yet</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- MOBILE STICKY ACTIONS PANEL -->
+<div class="actions-sticky-mobile">
+  {% if job.status == 'received' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="send_for_inspection">
+    <button type="submit" class="btn btn-primary" style="width:100%">🔍 Send for Inspection</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'estimate_sent' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="approve_estimate">
+    <button type="submit" class="btn btn-success" style="width:100%">👍 Approve</button>
+  </form>
+  <button onclick="openModal('rejectEstimateModal')" class="btn btn-danger" style="flex:1">🚫 Reject</button>
+  {% endif %}
+
+  {% if job.status == 'estimate_approved' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="start_repair">
+    <button type="submit" class="btn btn-primary" style="width:100%">🔧 Send for Repair</button>
+  </form>
+  {% endif %}
+
+  {% if job.status in ['repair_done', 'invoice_uploaded'] %}
+  <div style="flex:1;font-size:12px;color:var(--muted);padding:4px 8px;text-align:center">
+    📋 Scroll down — use the Invoice &amp; Payment panel
+  </div>
+  {% endif %}
+
+  {% if job.status == 'payment_received' %}
+  <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="flex:1">🚚 Dispatch</button>
+  {% endif %}
+
+  {% if job.status == 'dispatched' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="delivered">
+    <button type="submit" class="btn btn-success" style="width:100%">🏠 Delivered</button>
+  </form>
+  {% endif %}
+
+  {% if job.status == 'delivered' %}
+  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
+    <input type="hidden" name="action" value="close">
+    <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
+  </form>
+  {% endif %}
+</div>
+
+<!-- ══ INVOICE TRIGGER BUTTON (visible when repair_done or invoice_uploaded) ══ -->
+{% if job.status in ['repair_done', 'invoice_uploaded'] %}
+<div class="card mb-4" style="border-left:3px solid var(--green)">
+  <div class="card-header">
+    <span class="card-title">🧾 Invoice &amp; Payment</span>
+    {% if job.status == 'invoice_uploaded' %}
+    <span style="font-size:11px;background:rgba(77,182,172,.15);color:var(--green);
+                 padding:3px 8px;border-radius:20px;font-weight:600">✅ Invoice on file</span>
+    {% endif %}
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+    <div style="font-size:13px;color:var(--muted)">
+      {% if job.status == 'invoice_uploaded' %}
+        Invoice already sent.
+        {% if job.invoice_path %}
+          <a href="/static/uploads/{{ job.invoice_path }}" target="_blank" style="color:var(--blue);margin-left:6px">📄 View</a>
+        {% endif %}
+        You can re-upload to resend.
+      {% else %}
+        Upload the invoice PDF and choose how the customer will pay.
+      {% endif %}
+    </div>
+    <button onclick="openModal('invoiceModal')" class="btn btn-success" style="min-width:200px">
+      📤 {{ 'Re-send Invoice' if job.status == 'invoice_uploaded' else 'Upload &amp; Send Invoice' }}
+    </button>
+  </div>
+  {% if job.payment_link %}
+  <div class="info-banner green" style="margin-top:10px;word-break:break-all;font-size:11px">
+    🔗 Payment link: <a href="{{ job.payment_link }}" target="_blank" style="color:var(--green)">{{ job.payment_link }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ══ INVOICE MODAL ══════════════════════════════════════════════════════════ -->
+{% if job.status in ['repair_done', 'invoice_uploaded'] %}
+<div class="modal-overlay" id="invoiceModal" style="align-items:flex-end">
+  <div class="modal" style="max-width:540px;width:100%;border-radius:18px 18px 0 0;max-height:92vh;overflow-y:auto;padding-bottom:env(safe-area-inset-bottom,12px)">
+    <div class="modal-header" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-radius:18px 18px 0 0">
+      <div class="modal-title">🧾 Upload Invoice &amp; Send to Customer</div>
+      <button class="modal-close" onclick="closeModal('invoiceModal')">✕</button>
+    </div>
+
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update"
+          enctype="multipart/form-data" id="invoiceForm">
+      <input type="hidden" name="action" value="upload_invoice_and_send">
+      <div class="modal-body" style="padding:16px 20px">
+
+        <!-- ① Invoice File -->
+        <div class="form-section-label">① Invoice File</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2">
+            <label class="form-label">
+              Upload PDF / Image
+              {% if job.invoice_path %}
+                &nbsp;<a href="/static/uploads/{{ job.invoice_path }}" target="_blank"
+                         style="font-size:11px;color:var(--blue)">📄 View current</a>
+              {% endif %}
+            </label>
+            <input type="file" name="invoice_file" class="form-control"
+                   accept=".pdf,.png,.jpg,.jpeg"
+                   {% if job.status == 'repair_done' %}required{% endif %}>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label class="form-label">Invoice #</label>
+            <input type="text" name="invoice_number" class="form-control"
+                   placeholder="INV-001" value="{{ job.invoice_number or '' }}">
+          </div>
+        </div>
+
+        <!-- ② Invoice Amount -->
+        <div class="form-section-label">② Invoice Amount</div>
+        <div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:14px">
+          <div class="form-row" style="margin-bottom:8px">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">Parts (₹)</label>
+              <input type="number" id="inv_parts" step="0.01" min="0"
+                     class="form-control" inputmode="decimal"
+                     value="{{ job.parts_cost or 0 }}" oninput="recalcInvoice()">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">Labour (₹)</label>
+              <input type="number" id="inv_labour" step="0.01" min="0"
+                     class="form-control" inputmode="decimal"
+                     value="{{ job.labour_cost or 0 }}" oninput="recalcInvoice()">
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;
+                      background:var(--bg2);border-radius:8px;padding:10px 14px">
+            <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total</span>
+            <span style="font-size:24px;font-weight:800;color:var(--green)" id="inv_total_display">
+              ₹{{ "%.2f"|format((job.invoice_total_amount or 0) if job.invoice_total_amount else ((job.parts_cost or 0) + (job.labour_cost or 0))) }}
+            </span>
+          </div>
+          <input type="hidden" name="invoice_total_amount" id="inv_total_hidden"
+                 value="{{ job.invoice_total_amount or ((job.parts_cost or 0) + (job.labour_cost or 0)) }}">
+        </div>
+
+        <!-- ③ Payment Method -->
+        <div class="form-section-label">③ How will the customer pay?</div>
+        <div class="payment-method-group">
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="razorpay"
+                   {% if not job.payment_method or job.payment_method == 'razorpay' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">💳</div>
+              <div><div class="payment-option-title">Razorpay Link</div>
+                   <div class="payment-option-sub">Auto payment link</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="cash_cheque"
+                   {% if job.payment_method == 'cash_cheque' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">💵</div>
+              <div><div class="payment-option-title">Cash / Cheque</div>
+                   <div class="payment-option-sub">Pay in person</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="pay_later"
+                   {% if job.payment_method == 'pay_later' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">⏳</div>
+              <div><div class="payment-option-title">Pay Later</div>
+                   <div class="payment-option-sub">Deferred payment</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="free_of_charge"
+                   {% if job.payment_method == 'free_of_charge' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">🎁</div>
+              <div><div class="payment-option-title">Free of Charge</div>
+                   <div class="payment-option-sub">Waive — mark paid</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="other"
+                   {% if job.payment_method == 'other' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">📝</div>
+              <div><div class="payment-option-title">Other</div>
+                   <div class="payment-option-sub">Custom arrangement</div></div>
+            </div>
+          </label>
+
+        </div><!-- /payment-method-group -->
+
+        <!-- Other notes textarea -->
+        <div id="otherNotesBox" style="display:none;margin-top:8px">
+          <textarea name="other_payment_notes" class="form-control" rows="2"
+                    placeholder="Describe the payment arrangement..."></textarea>
+        </div>
+
+        <!-- Info banner -->
+        <div id="paymentInfoBanner" class="info-banner blue" style="margin-top:10px;font-size:12px">
+          💳 A Razorpay payment link will be generated and sent via WhatsApp.
+        </div>
+
+      </div><!-- /modal-body -->
+
+      <div class="modal-footer" style="position:sticky;bottom:0;background:var(--bg2);z-index:2;padding:14px 20px;gap:10px">
+        <button type="button" class="btn btn-secondary" style="flex:1" onclick="closeModal('invoiceModal')">Cancel</button>
+        <button type="submit" class="btn btn-success" style="flex:2;font-size:14px;font-weight:700"
+                onclick="closeModal('invoiceModal')">
+          📤 Send Invoice
+        </button>
+      </div>
+
+    </form>
+  </div>
+</div>
+{% endif %}
+
+<!-- Reject Estimate Modal (admin) -->
+<div class="modal-overlay" id="rejectEstimateModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🚫 Reject Estimate</div>
+      <button class="modal-close" onclick="closeModal('rejectEstimateModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+      <input type="hidden" name="action" value="reject_estimate">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Reason for Rejection</label>
+          <textarea name="rejection_reason" class="form-control" rows="3" placeholder="Why is the estimate being rejected?"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('rejectEstimateModal')">Cancel</button>
+        <button type="submit" class="btn btn-danger">Reject Estimate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<!-- Dispatch Modal -->
+<div class="modal-overlay" id="dispatchModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">🚚 Dispatch Item</div>
+      <button class="modal-close" onclick="closeModal('dispatchModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" enctype="multipart/form-data">
+      <input type="hidden" name="action" value="dispatch">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Courier Name</label>
+          <input type="text" name="courier_name" class="form-control" placeholder="e.g. Delhivery, BlueDart...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tracking Number *</label>
+          <input type="text" name="tracking_number" class="form-control" placeholder="Enter courier tracking number" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Dispatch Date</label>
+            <input type="date" name="dispatch_date" class="form-control" id="dispatch-date">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Expected Delivery</label>
+            <input type="date" name="expected_delivery" class="form-control">
+          </div>
+        </div>
+
+        <!-- LR / Courier Receipt Upload -->
+        <div class="form-group" style="margin-top:4px">
+          <label class="form-label">📎 LR / Courier Receipt <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+          <div id="lr-drop-zone" style="border:2px dashed var(--border);border-radius:10px;padding:18px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative">
+            <input type="file" name="courier_receipt" id="lr-file-input"
+                   accept=".pdf,.png,.jpg,.jpeg"
+                   style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%"
+                   onchange="onLRFileChosen(this)">
+            <div id="lr-drop-label">
+              <div style="font-size:22px;margin-bottom:4px">📄</div>
+              <div style="font-size:12px;color:var(--muted)">Click or drag & drop PDF / image</div>
+            </div>
+            <div id="lr-file-name" style="display:none;font-size:12px;color:var(--blue);font-weight:600;margin-top:4px"></div>
+          </div>
+          {% if job.courier_receipt_path %}
+          <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+            Current: <a href="/static/uploads/{{ job.courier_receipt_path }}" target="_blank" style="color:var(--blue)">📄 View existing LR</a>
+            &nbsp;(uploading a new file will replace it)
+          </div>
+          {% endif %}
+        </div>
+
+        <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
+          📱 Customer will receive a WhatsApp notification with tracking details
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('dispatchModal')">Cancel</button>
+        <button type="submit" class="btn btn-blue">Dispatch &amp; Notify</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Hidden barcode print area -->
+<div id="barcode-print-area" style="display:none">
+  <div style="font-family:monospace;font-size:8pt;font-weight:700;letter-spacing:0.5px;margin-bottom:3px;text-align:center;color:#000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.job_id }}</div>
+  <svg id="barcode-print-svg" style="display:block;max-width:2.9in"></svg>
+  <div style="margin-top:3px;font-size:7pt;text-align:center;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.customer_name }} · {{ job.item_type }}</div>
+  <div style="margin-top:2px;font-size:6.5pt;text-align:center;color:#555">{{ job.received_at[:10] }}</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var today = new Date().toISOString().split('T')[0];
+  var dispatchDate = document.getElementById('dispatch-date');
+  var invDate = document.getElementById('inv-date');
+  if (dispatchDate && !dispatchDate.value) dispatchDate.value = today;
+  if (invDate && !invDate.value) invDate.value = today;
+  
+  // Generate barcode
+  var barcodeVal = "{{ job.job_id }}";
+  var containerW = document.getElementById('barcode-card').offsetWidth - 40;
+  var barW = Math.min(2, Math.max(1, containerW / 120));
+  var opts = {
+    format: "CODE128",
+    width: barW,
+    height: 60,
+    displayValue: true,
+    fontSize: 11,
+    margin: 6,
+    background: "transparent",
+    lineColor: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#E8EBF4'
+  };
+  
+  try {
+    JsBarcode("#barcode-svg", barcodeVal, opts);
+  } catch(e) {
+    var el = document.getElementById('barcode-svg');
+    if (el) el.parentElement.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Could not generate barcode</div>';
+  }
+  
+  try {
+    JsBarcode("#barcode-print-svg", barcodeVal, {
+      format: "CODE128",
+      width: 1.5,
+      height: 50,
+      displayValue: true,
+      fontSize: 9,
+      margin: 2,
+      background: "#ffffff",
+      lineColor: "#000000"
+    });
+  } catch(e) {}
+  
+  window.onThemeChange = function(theme) {
+    var newColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || (theme === 'dark' ? '#E8EBF4' : '#1A1D2E');
+    try {
+      JsBarcode("#barcode-svg", barcodeVal, Object.assign({}, opts, { lineColor: newColor }));
+    } catch(e) {}
+  };
+});
+
+/* ─── UNIFIED INVOICE PANEL SCRIPTS ─────────────────────────────────────────*/
+/* ── LR / Courier Receipt Upload ─────────────────────────────────────────────*/
+function onLRFileChosen(input) {
+  var label = document.getElementById('lr-drop-label');
+  var name  = document.getElementById('lr-file-name');
+  var zone  = document.getElementById('lr-drop-zone');
+  if (input.files && input.files[0]) {
+    name.textContent = '📎 ' + input.files[0].name;
+    name.style.display = 'block';
+    label.style.display = 'none';
+    zone.style.borderColor = 'var(--accent)';
+    zone.style.background  = 'rgba(74,158,255,.06)';
+  }
+}
+
+(function() {
+  var zone = document.getElementById('lr-drop-zone');
+  if (!zone) return;
+  zone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    zone.style.borderColor = 'var(--accent)';
+    zone.style.background  = 'rgba(74,158,255,.08)';
+  });
+  zone.addEventListener('dragleave', function() {
+    zone.style.borderColor = 'var(--border)';
+    zone.style.background  = '';
+  });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    var file = e.dataTransfer.files[0];
+    if (file) {
+      var input = document.getElementById('lr-file-input');
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      onLRFileChosen(input);
+    }
+  });
+})();
+
+function recalcInvoice() {
+  var p = parseFloat(document.getElementById('inv_parts').value) || 0;
+  var l = parseFloat(document.getElementById('inv_labour').value) || 0;
+  var total = p + l;
+  document.getElementById('inv_total_display').textContent = '₹' + total.toFixed(2);
+  document.getElementById('inv_total_hidden').value = total.toFixed(2);
+}
+
+var PAY_BANNERS = {
+  razorpay:       '💳 A Razorpay payment link will be generated and sent via WhatsApp.',
+  cash_cheque:    '💵 Invoice will be sent via WhatsApp. Customer will pay by Cash / Cheque in person.',
+  pay_later:      '⏳ Invoice will be sent via WhatsApp. Payment is deferred.',
+  free_of_charge: '🎁 Invoice sent and job marked as Paid (no charge).',
+  other:          '📝 Invoice will be sent via WhatsApp. Describe the arrangement below.',
+};
+
+function onPaymentMethodChange(val) {
+  var notesBox = document.getElementById('otherNotesBox');
+  if (notesBox) notesBox.style.display = val === 'other' ? 'block' : 'none';
+  var banner = document.getElementById('paymentInfoBanner');
+  if (banner) {
+    banner.textContent = PAY_BANNERS[val] || '';
+    banner.className = 'info-banner ' + (val === 'free_of_charge' ? 'green' : 'blue');
+    banner.style.fontSize = '12px';
+    banner.style.marginTop = '10px';
+  }
+}
+
+(function() {
+  var checked = document.querySelector('input[name="payment_method"]:checked');
+  if (checked) onPaymentMethodChange(checked.value);
+})();
+
+function printBarcode() {
+  var area = document.getElementById('barcode-print-area');
+  area.style.display = 'flex';
+  area.style.flexDirection = 'column';
+  area.style.alignItems = 'center';
+  area.style.justifyContent = 'center';
+  window.print();
+  setTimeout(function() { area.style.display = 'none'; }, 500);
+}
+
+/* ─── LIVE STATUS POLLING ─────────────────────────────────────────────────────
+   Polls /api/job/<id>/status every 10 seconds and updates the page in-place
+   without a full reload. Updates: status badge, current-status card,
+   financials, activity log, and the notification bell count.
+──────────────────────────────────────────────────────────────────────────────*/
+(function() {
+  var JOB_ID = "{{ job.job_id }}";
+  var POLL_INTERVAL = 10000; // 10 seconds
+  var lastStatus = "{{ job.status }}";
+  var lastUpdatedAt = "{{ job.updated_at }}";
+
+  // ── Status label/icon map (mirrors STATUS_FLOW in app.py) ──────────────────
+  var STATUS_FLOW = {
+    sent_for_inspection: { label: 'Sent for Inspection', icon: '🔍', color: '#FFB74D' },
+    not_repairable:      { label: 'Not Repairable',      icon: '❌', color: '#EF5350' },
+    estimate_sent:       { label: 'Estimate Sent',        icon: '📄', color: '#FFD54F' },
+    estimate_approved:   { label: 'Estimate Approved',    icon: '👍', color: '#4DB6AC' },
+    estimate_rejected:   { label: 'Estimate Rejected',    icon: '🚫', color: '#EF5350' },
+    sent_for_repair:     { label: 'Sent for Repair',      icon: '🔧', color: '#F06292' },
+    repair_done:         { label: 'Repair Done',          icon: '✅', color: '#4DB6AC' },
+    invoice_uploaded:    { label: 'Invoice Uploaded',     icon: '📎', color: '#AED581' },
+    payment_received:    { label: 'Payment Received',     icon: '💰', color: '#66BB6A' },
+    dispatched:          { label: 'Dispatched',           icon: '🚚', color: '#4DD0E1' },
+    closed:              { label: 'Closed',               icon: '🔒', color: '#90A4AE' },
+  };
+
+  var STATUS_HINT = {
+    sent_for_inspection: '🔍 Awaiting technician inspection',
+    estimate_sent:       '📄 Estimate sent — waiting for admin approval',
+    estimate_approved:   '👍 Estimate approved — ready for repair',
+    sent_for_repair:     '🔧 Device is being repaired',
+    repair_done:         '✅ Repair complete — awaiting invoice upload',
+    invoice_uploaded:    '📎 Invoice uploaded — pending payment',
+    payment_received:    '💰 Payment received — ready for dispatch',
+    dispatched:          '🚚 Dispatched — in transit',
+    closed:              '🔒 Job completed',
+    not_repairable:      '❌ Item cannot be repaired',
+    estimate_rejected:   '🚫 Estimate rejected by admin',
+  };
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function fmt(v) { return v != null ? parseFloat(v).toFixed(2) : '0.00'; }
+
+  function flash(el) {
+    el.style.transition = 'background 0.4s';
+    el.style.background = 'rgba(74,158,255,0.18)';
+    setTimeout(function() { el.style.background = ''; }, 1200);
+  }
+
+  // ── Update status badge (header + current-status card) ────────────────────
+  function updateStatusBadge(status) {
+    var s = STATUS_FLOW[status] || { label: status, icon: '•', color: '#90A4AE' };
+
+    // Badge in the Repair Journey card header
+    var badge = document.getElementById('live-status-badge');
+    if (badge) {
+      badge.textContent = s.icon + ' ' + s.label;
+      flash(badge);
+    }
+
+    // Current Status card
+    var pill = document.getElementById('live-status-pill');
+    if (pill) {
+      pill.textContent = s.icon + ' ' + s.label;
+      pill.style.background = s.color + '20';
+      pill.style.color = s.color;
+      pill.style.border = '1px solid ' + s.color + '40';
+    }
+    var hint = document.getElementById('live-status-hint');
+    if (hint) {
+      hint.textContent = STATUS_HINT[status] || status;
+    }
+  }
+
+  // ── Update activity log ────────────────────────────────────────────────────
+  function updateLogs(logs) {
+    var container = document.getElementById('live-activity-log');
+    if (!container || !logs || !logs.length) return;
+    var html = '';
+    logs.forEach(function(l) {
+      html += '<div class="timeline-item">' +
+        '<div class="timeline-meta">' + l.user_name + ' · ' + (l.created_at || '').slice(0,16) + '</div>' +
+        '<div class="timeline-content">' + l.action + '</div>' +
+        (l.details ? '<div class="timeline-details">' + l.details + '</div>' : '') +
+        '</div>';
+    });
+    container.innerHTML = html;
+  }
+
+  // ── Update finance section ─────────────────────────────────────────────────
+  function updateFinance(data) {
+    var el;
+    el = document.getElementById('live-parts');   if (el) el.textContent = '₹' + fmt(data.parts_cost);
+    el = document.getElementById('live-labour');  if (el) el.textContent = '₹' + fmt(data.labour_cost);
+    el = document.getElementById('live-total');   if (el) el.textContent = '₹' + fmt(data.total_amount);
+    el = document.getElementById('live-invoice'); if (el && data.invoice_number) el.textContent = data.invoice_number;
+    el = document.getElementById('live-payment-status');
+    if (el) {
+      if (data.payment_status === 'paid') {
+        el.innerHTML = '<span class="badge badge-delivered">✅ Paid</span>';
+      } else {
+        var ps = (data.payment_status || 'pending').replace(/_/g,' ');
+        el.innerHTML = '<span class="badge badge-payment_pending">⏳ ' + ps.charAt(0).toUpperCase() + ps.slice(1) + '</span>';
+      }
+    }
+  }
+
+  // ── Update notification bell count ─────────────────────────────────────────
+  function updateBell(count) {
+    var badges = document.querySelectorAll('.notif-badge, [data-notif-badge]');
+    badges.forEach(function(b) {
+      if (count > 0) {
+        b.textContent = count;
+        b.style.display = '';
+      } else {
+        b.style.display = 'none';
+      }
+    });
+  }
+
+  // ── Show a toast banner when status changes ────────────────────────────────
+  function showToast(msg) {
+    var t = document.getElementById('live-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'live-toast';
+      t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);' +
+        'background:var(--blue);color:#fff;padding:10px 20px;border-radius:10px;' +
+        'font-size:13px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.3);' +
+        'transition:opacity .4s;white-space:nowrap';
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.style.opacity = '1';
+    clearTimeout(t._hide);
+    t._hide = setTimeout(function() { t.style.opacity = '0'; }, 3500);
+  }
+
+  // ── Main poll function ─────────────────────────────────────────────────────
+  function poll() {
+    fetch('/api/job/' + JOB_ID + '/status', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data) return;
+
+        // Detect status change
+        if (data.status !== lastStatus) {
+          var s = STATUS_FLOW[data.status] || { label: data.status, icon: '•' };
+          showToast('Status updated: ' + s.icon + ' ' + s.label);
+          lastStatus = data.status;
+        }
+
+        updateStatusBadge(data.status);
+        updateLogs(data.logs);
+        updateFinance(data);
+      })
+      .catch(function() { /* silent — will retry next cycle */ });
+
+    // Also refresh unread notification count
+    fetch('/api/notifications/unread_count', { credentials: 'same-origin' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) { if (d) updateBell(d.count); })
+      .catch(function() {});
+  }
+
+  // Kick off polling after page load
+  setTimeout(function() {
+    poll();
+    setInterval(poll, POLL_INTERVAL);
+  }, 2000);
+})();
+</script>
+{% endblock %}
