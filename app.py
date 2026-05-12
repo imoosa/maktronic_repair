@@ -52,7 +52,7 @@ TEMPLATE_IDS = {
     'estimate_rejected_confirmation': 'estimate_rejection',
     'repair_completed_invoice': 'dev_invoice_sent',  # exact AiSensy campaign name
     'payment_received': 'payment_received',
-    'product_dispatched': 'product_dispatched',
+    'product_dispatched': 'product_dispatch',
 }
 
 # Helper function to format phone number
