@@ -1195,23 +1195,22 @@ def admin_update_job(job_id):
             )
             log_action(db, job_id, 'Payment Method: Pay Later — Invoice Sent', session['user_id'],
                        f'Amount ₹{invoice_total_amount:.2f} deferred')
-            # Step 2: Mark as paid and send payment received message
+            # Step 2: Mark as paid, move to dispatched (no payment received message)
             db.execute("""
                 UPDATE jobs SET payment_status='paid', payment_received_at=?,
                 status='payment_received', updated_at=? WHERE job_id=?
             """, (now, now, job_id))
-            log_action(db, job_id, 'Auto-Marked Paid (Pay Later)', session['user_id'])
-            send_payment_received_confirmation(job_dict, invoice_total_amount, 'PAY_LATER')
-            flash('✅ Invoice sent and payment marked received via WhatsApp (Pay Later).', 'success')
+            log_action(db, job_id, 'Auto-Marked Paid & Dispatched (Pay Later)', session['user_id'])
+            flash('✅ Invoice sent via WhatsApp. Job moved to Dispatched (Pay Later).', 'success')
 
         elif payment_method == 'free_of_charge':
+            # Mark as paid, move to dispatched (no payment received message)
             db.execute("""
                 UPDATE jobs SET payment_status='paid', payment_received_at=?,
                 status='payment_received', updated_at=? WHERE job_id=?
             """, (now, now, job_id))
-            log_action(db, job_id, 'Free of Charge — Payment Waived', session['user_id'])
-            send_payment_received_confirmation(job_dict, 0.0, 'FREE_OF_CHARGE')
-            flash('✅ Marked Free of Charge. Customer notified.', 'success')
+            log_action(db, job_id, 'Free of Charge — Payment Waived & Dispatched', session['user_id'])
+            flash('✅ Marked Free of Charge. Job moved to Dispatched.', 'success')
 
         elif payment_method == 'other':
             # Step 1: Send non-razorpay invoice message
@@ -1223,14 +1222,13 @@ def admin_update_job(job_id):
             )
             log_action(db, job_id, 'Payment Method: Other — Invoice Sent', session['user_id'],
                        other_notes or 'No notes')
-            # Step 2: Mark as paid and send payment received message
+            # Step 2: Mark as paid, move to dispatched (no payment received message)
             db.execute("""
                 UPDATE jobs SET payment_status='paid', payment_received_at=?,
                 status='payment_received', updated_at=? WHERE job_id=?
             """, (now, now, job_id))
-            log_action(db, job_id, 'Auto-Marked Paid (Other)', session['user_id'])
-            send_payment_received_confirmation(job_dict, invoice_total_amount, f'OTHER_{(other_notes or "").upper()[:20]}')
-            flash(f'✅ Invoice sent and payment marked received via WhatsApp ({other_notes or "Other"}).', 'success')
+            log_action(db, job_id, 'Auto-Marked Paid & Dispatched (Other)', session['user_id'])
+            flash(f'✅ Invoice sent via WhatsApp. Job moved to Dispatched ({other_notes or "Other"}).', 'success')
 
         db.commit()
         return redirect(url_for('admin_job_detail', job_id=job_id))
