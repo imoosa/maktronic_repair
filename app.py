@@ -192,19 +192,21 @@ def send_payment_received_confirmation(job, amount, transaction_id):
         variables
     )
 
-def send_dispatched_notification(job, courier_name, tracking_number, expected_delivery):
-    """Template 8: Product Dispatched
-    Template vars: {{1}}=name, {{2}}=job_id, {{3}}=product, {{4}}=courier, {{5}}=tracking, {{6}}=expected_delivery
-    """
+def send_dispatched_notification(job, courier_name, tracking_number, expected_delivery, media_url=None):
     variables = [
-        job.get('customer_name', 'Customer'),     # {{1}}
-        job.get('job_id', 'N/A'),                 # {{2}}
-        job.get('item_type', 'Device'),           # {{3}} Product
-        courier_name or 'Our Courier Partner',    # {{4}} Courier
-        tracking_number or 'N/A',                 # {{5}} Tracking Number
-        expected_delivery or '3-5 business days' # {{6}} Expected Delivery
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        courier_name or 'Our Courier Partner',
+        tracking_number or 'N/A',
+        expected_delivery or '3-5 business days'
     ]
-    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['product_dispatched'], variables)
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['product_dispatched'],
+        variables,
+        media_url=media_url  # ✅ pass receipt image
+    )
 
 def send_payment_link_via_whatsapp(job, payment_link, amount):
     """Payment link is embedded in dev_invoice_sent template via {{7}} job_id + {{8}} token.
@@ -1210,20 +1212,34 @@ def admin_update_job(job_id):
         courier_name = request.form.get('courier_name')
         dispatch_date = request.form.get('dispatch_date')
         expected = request.form.get('expected_delivery')
-        
+    
+        # ✅ Save the courier receipt file
+        receipt_file = request.files.get('courier_receipt')
+        receipt_path = None
+        receipt_public_url = None
+    
+        if receipt_file and receipt_file.filename:
+            ext = secure_filename(receipt_file.filename).rsplit('.', 1)[-1].lower()
+            filename = f"lr_{job_id}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            receipt_file.save(save_path)
+            receipt_path = filename
+            receipt_public_url = build_public_url(f'/static/uploads/{filename}')
+    
         db.execute("""
             UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
-            dispatch_date=?, expected_delivery=?, updated_at=?
+            dispatch_date=?, expected_delivery=?, courier_receipt_path=?, updated_at=?
             WHERE job_id=?
-        """, (tracking, courier_name, dispatch_date, expected, now, job_id))
+        """, (tracking, courier_name, dispatch_date, expected, receipt_path, now, job_id))
         log_action(db, job_id, 'Dispatched', session['user_id'],
                    f'Courier: {courier_name}, Tracking: {tracking}')
-        
-        # Send WhatsApp dispatch notification
+    
+        db.commit()  # ✅ commit before fetching
+    
+        # ✅ Send WhatsApp with receipt as media
         job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-        send_dispatched_notification(dict(job), courier_name, tracking, expected)
-        
-        db.commit()
+        send_dispatched_notification(dict(job), courier_name, tracking, expected, receipt_public_url)
+    
         flash('Job dispatched and customer notified via WhatsApp!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
