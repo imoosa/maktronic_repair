@@ -12,12 +12,7 @@
   <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
   <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
 </div>
-{% if has_perm('manage_users') %}
-<div class="nav-section">
-  <div class="nav-label">Management</div>
-  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
-</div>
-{% endif %}
+
 {% endblock %}
 
 {% block bn_dashboard %}{% endblock %}
@@ -57,6 +52,7 @@
 
 <!-- STATUS PILLS — scrollable on mobile -->
 <div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;margin-bottom:16px;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:none">
+  <a href="/admin/jobs/export{% if status_filter or search %}?status={{ status_filter }}&search={{ search }}{% endif %}" class="btn btn-xs btn-secondary" style="flex-shrink:0;border-color:rgba(74,158,255,.4);color:var(--blue)" title="Export to Excel">📊 Export</a>
   <a href="/admin/jobs" class="btn btn-xs {% if not status_filter %}btn-primary{% else %}btn-secondary{% endif %}" style="flex-shrink:0">All</a>
   {% for key, val in status_flow.items() %}
   <a href="/admin/jobs?status={{ key }}" class="btn btn-xs {% if status_filter == key %}btn-primary{% else %}btn-secondary{% endif %}" style="flex-shrink:0">{{ val.icon }} {{ val.label }}</a>

@@ -4,6 +4,13 @@ import sqlite3, os, uuid, datetime, json, io, hmac, hashlib
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 import razorpay
+import requests
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
 
 app = Flask(__name__)
 app.secret_key = 'maktronics-secret-key-2024'
@@ -16,6 +23,199 @@ RAZORPAY_KEY_ID     = 'rzp_test_SmNSnbXRbFyUas'
 RAZORPAY_KEY_SECRET = 'mUiDDcYZ72EzW7pUvtCi4asH'
 
 razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+# ─── WHATSAPP CONFIG (AI SENSY) ──────────────────────────────────────────────
+AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
+AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
+
+# ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
+# AiSensy must reach your server from the internet to fetch media (PDF invoices).
+#   Production:  export PUBLIC_BASE_URL=https://yourdomain.com
+#   Local dev:   export PUBLIC_BASE_URL=https://abc123.ngrok.io  (use ngrok)
+PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'https://maktronic-repair-3.onrender.com').rstrip('/')
+
+def build_public_url(path):
+    """Return a publicly accessible URL. path must start with '/'.
+    Returns None if PUBLIC_BASE_URL is not set (media attachment skipped)."""
+    if not PUBLIC_BASE_URL:
+        print(f'[URL] WARNING: PUBLIC_BASE_URL not set — skipping media for: {path}')
+        return None
+    return f'{PUBLIC_BASE_URL}{path}'
+
+
+# Template IDs from approved templates
+TEMPLATE_IDS = {
+    'job_created': 'job_creation',
+    'not_repairable': 'not_repairable',
+    'estimate_sent': 'estimate_sents',
+    'estimate_approved_confirmation': 'estimate_approved',
+    'estimate_rejected_confirmation': 'estimate_rejection',
+    'repair_completed_invoice': 'dev_invoice_sent',  # exact AiSensy campaign name
+    'payment_received': 'payment_received',
+    'product_dispatched': 'product_dispatched',
+}
+
+# Helper function to format phone number
+def format_phone_number(phone):
+    if not phone:
+        return None
+    phone = str(phone).strip()
+    phone = ''.join(filter(str.isdigit, phone))
+    if phone.startswith('0'):
+        phone = phone[1:]
+    if not phone.startswith('91') and len(phone) == 10:
+        phone = '91' + phone
+    return phone
+
+def send_whatsapp_template(to_number, template_name, variables, media_url=None):
+    if not AISENSY_API_KEY:
+        return {'success': False, 'error': 'API key not configured'}
+
+    to_number = format_phone_number(to_number)
+    if not to_number:
+        return {'success': False, 'error': 'Invalid phone number'}
+
+    url = "https://backend.aisensy.com/campaign/t1/api/v2"
+
+    payload = {
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": TEMPLATE_IDS.get(template_name, template_name),
+        "destination": to_number,
+        "userName": variables[0] if variables else "Customer",
+        "source": "api",
+        "templateParams": variables,
+        "tags": [],
+        "attributes": {}
+    }
+
+    if media_url:
+        payload["media"] = {
+            "url": media_url,
+            "filename": f"invoice_{datetime.datetime.now().strftime('%Y%m%d')}.pdf"
+        }
+
+    headers = {'Content-Type': 'application/json'}
+
+    try:
+        print(f"[WhatsApp] Sending to URL: {url}")
+        print(f"[WhatsApp] Payload: {payload}")
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        print(f"[WhatsApp] Success: {response.json()}")
+        return {'success': True, 'response': response.json()}
+    except requests.exceptions.HTTPError as e:
+        err_body = e.response.text if e.response else str(e)
+        print(f"[WhatsApp Error] Failed to send {template_name}: {e} | Response: {err_body}")
+        return {'success': False, 'error': str(e), 'details': err_body}
+    except Exception as e:
+        print(f"[WhatsApp Error] Failed to send {template_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def send_job_created_notification(job):
+    """Template 1: Job Created & Barcode Generated"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        job.get('item_description', 'Issue description') or 'General Service'
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['job_created'], variables)
+
+def send_not_repairable_notification(job, reason):
+    """Template 2: Device Not Repairable"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        reason
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['not_repairable'], variables)
+
+def send_estimate_notification(job, estimate_amount, parts_cost, labour_cost):
+    """Template 3: Estimate Sent (with YES/NO approval flow)"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        f"{estimate_amount:.2f}",
+        f"{parts_cost:.2f}",
+        f"{labour_cost:.2f}"
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_sent'], variables)
+
+def send_estimate_approved_confirmation(job):
+    """Template 4: Estimate Approved Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A')
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_approved_confirmation'], variables)
+
+def send_estimate_rejected_confirmation(job):
+    """Template 5: Estimate Rejected Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A')
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_rejected_confirmation'], variables)
+
+def send_invoice_ready_notification(job, total_amount, parts_cost, labour_cost, invoice_url=None):
+    """Template dev_invoice_sent — 8 params matching AiSensy template:
+      {{1}} name  {{2}} job_id  {{3}} item_type
+      {{4}} ₹total  {{5}} ₹parts  {{6}} ₹labour
+      {{7}} job_id (for payment URL)  {{8}} payment_token (for payment URL)
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        job.get('job_id', 'N/A'),               # {{7}}
+        job.get('payment_token', ''),           # {{8}}
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['repair_completed_invoice'], variables, media_url=invoice_url)
+
+def send_payment_received_confirmation(job, amount, transaction_id):
+    """Template 7: Payment Received Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        f"{amount:.2f}",                        # {{2}}
+        job.get('job_id', 'N/A'),               # {{3}}
+        transaction_id,                          # {{4}}
+        datetime.datetime.now().strftime('%d/%m/%Y')  # {{5}}
+    ]
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['payment_received'],
+        variables
+    )
+
+def send_dispatched_notification(job, courier_name, tracking_number, expected_delivery):
+    """Template 8: Product Dispatched
+    Template vars: {{1}}=name, {{2}}=job_id, {{3}}=product, {{4}}=courier, {{5}}=tracking, {{6}}=expected_delivery
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),     # {{1}}
+        job.get('job_id', 'N/A'),                 # {{2}}
+        job.get('item_type', 'Device'),           # {{3}} Product
+        courier_name or 'Our Courier Partner',    # {{4}} Courier
+        tracking_number or 'N/A',                 # {{5}} Tracking Number
+        expected_delivery or '3-5 business days' # {{6}} Expected Delivery
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['product_dispatched'], variables)
+
+def send_payment_link_via_whatsapp(job, payment_link, amount):
+    """Payment link is embedded in dev_invoice_sent template via {{7}} job_id + {{8}} token.
+    This is called after send_invoice_ready_notification so the token is already saved.
+    No separate message needed — just logs the link for reference.
+    """
+    if not payment_link:
+        print(f"[WhatsApp] pay_link is None for {job.get('job_id')} — set PUBLIC_BASE_URL env var")
+        return {'success': False, 'error': 'payment_link is None (PUBLIC_BASE_URL not set?)'}
+    print(f"[WhatsApp] Payment link for {job.get('job_id')}: {payment_link} (embedded in invoice template)")
+    return {'success': True, 'note': 'payment link already sent via invoice template'}
 
 @app.context_processor
 def inject_globals():
@@ -49,14 +249,7 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 DB_PATH = 'maktronics.db'
 
-# ─── STATUS FLOW (SIMPLIFIED & ENFORCED) ──────────────────────────────────────
-# Admin: generates ID+barcode → sent_for_inspection
-# Tech:  not_repairable  OR  send estimate (estimate_sent)
-# Admin: estimate_approved OR estimate_rejected
-# Admin: estimate_approved → sent_for_repair
-# Tech:  repair_done
-# Admin: upload_invoice → payment_received → dispatched → closed
-
+# ─── STATUS FLOW ──────────────────────────────────────────────────────────────
 STATUS_FLOW = {
     'sent_for_inspection': {'label': 'Sent for Inspection', 'icon': '🔍', 'color': '#FFB74D'},
     'not_repairable':      {'label': 'Not Repairable',      'icon': '❌', 'color': '#EF5350'},
@@ -71,17 +264,10 @@ STATUS_FLOW = {
     'closed':              {'label': 'Closed',              'icon': '🔒', 'color': '#90A4AE'},
 }
 
-# Ordered list for the progress tracker
 STATUS_ORDER = [
-    'sent_for_inspection',
-    'estimate_sent',
-    'estimate_approved',
-    'sent_for_repair',
-    'repair_done',
-    'invoice_uploaded',
-    'payment_received',
-    'dispatched',
-    'closed',
+    'sent_for_inspection', 'estimate_sent', 'estimate_approved',
+    'sent_for_repair', 'repair_done', 'invoice_uploaded',
+    'payment_received', 'dispatched', 'closed',
 ]
 
 # ─── DB SETUP ─────────────────────────────────────────────────────────────────
@@ -128,6 +314,24 @@ def init_db():
                 expected_delivery TEXT,
                 delivered_at TIMESTAMP,
                 notes TEXT,
+                invoice_path TEXT,
+                courier_name TEXT,
+                courier_receipt_path TEXT,
+                estimate_amount REAL DEFAULT 0,
+                estimate_notes TEXT,
+                estimate_sent_at TIMESTAMP,
+                estimate_approved_at TIMESTAMP,
+                not_repairable_reason TEXT,
+                sent_back_to_customer_at TIMESTAMP,
+                inspection_findings TEXT,
+                invoice_generate_date TIMESTAMP,
+                invoice_total_amount REAL DEFAULT 0,
+                razorpay_order_id TEXT,
+                razorpay_payment_id TEXT,
+                payment_link TEXT,
+                payment_token TEXT,
+                whatsapp_message_id TEXT,
+                payment_method TEXT DEFAULT 'razorpay',
                 FOREIGN KEY(assigned_tech_id) REFERENCES users(id)
             );
 
@@ -159,38 +363,6 @@ def init_db():
             );
         ''')
 
-        # Add columns with error handling (idempotent)
-        extra_columns = {
-            'invoice_path': 'TEXT',
-            'courier_name': 'TEXT',
-            'courier_receipt_path': 'TEXT',
-            'estimate_amount': 'REAL DEFAULT 0',
-            'estimate_notes': 'TEXT',
-            'estimate_sent_at': 'TIMESTAMP',
-            'estimate_approved_at': 'TIMESTAMP',
-            'not_repairable_reason': 'TEXT',
-            'sent_back_to_customer_at': 'TIMESTAMP',
-            'inspection_findings': 'TEXT',
-            'invoice_generate_date': 'TIMESTAMP',
-            'invoice_total_amount': 'REAL DEFAULT 0',
-            'razorpay_order_id': 'TEXT',
-            'razorpay_payment_id': 'TEXT',
-            'payment_link': 'TEXT',
-            'payment_token': 'TEXT',
-        }
-        for col_name, col_type in extra_columns.items():
-            try:
-                db.execute(f"ALTER TABLE jobs ADD COLUMN {col_name} {col_type}")
-                db.commit()
-            except Exception:
-                pass
-
-        try:
-            db.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
-            db.commit()
-        except Exception:
-            pass
-
         # Seed default users
         existing = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not existing:
@@ -215,14 +387,12 @@ def log_action(db, job_id, action, user_id, details=''):
                (job_id, action, user_id, details))
 
 def send_notification(db, recipient_id, job_id, message):
-    """Insert an in-app notification for recipient_id."""
     db.execute(
         "INSERT INTO notifications (recipient_id, job_id, message) VALUES (?,?,?)",
         (recipient_id, job_id, message)
     )
 
 def notify_all_admins(db, job_id, message):
-    """Send a notification to every admin/manager user."""
     admins = db.execute(
         "SELECT id FROM users WHERE role IN ('admin','manager')"
     ).fetchall()
@@ -253,6 +423,78 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# ─── WHATSAPP WEBHOOK (Handles YES/NO replies) ───────────────────────────────
+@app.route('/whatsapp/webhook', methods=['POST'])
+def whatsapp_webhook():
+    """Handle incoming WhatsApp messages from AI Sensy - processes YES/NO responses"""
+    data = request.json
+    
+    if not data:
+        return jsonify({'status': 'error', 'message': 'No data received'}), 400
+    
+    from_number = data.get('from', '')
+    message_body = data.get('message', '').lower().strip()
+    job_id = data.get('context', {}).get('job_id')
+    
+    # If job_id not in context, try to find by phone number
+    if not job_id:
+        db = get_db()
+        phone_raw = from_number[-10:] if len(from_number) >= 10 else from_number
+        job = db.execute(
+            "SELECT job_id, status FROM jobs WHERE customer_phone LIKE ?",
+            (f'%{phone_raw}%',)
+        ).fetchone()
+        if job and job['status'] == 'estimate_sent':
+            job_id = job['job_id']
+    
+    if job_id and message_body in ['yes', 'y', 'no', 'n']:
+        db = get_db()
+        is_approved = message_body in ['yes', 'y']
+        
+        if is_approved:
+            db.execute("""
+                UPDATE jobs SET status='estimate_approved', estimate_approved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Customer Approved Estimate via WhatsApp', None, 'Customer replied YES')
+            
+            # Move to sent_for_repair automatically
+            db.execute("""
+                UPDATE jobs SET status='sent_for_repair', updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Status → sent_for_repair after customer approval', None)
+            
+            # Send confirmation to customer
+            job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            send_estimate_approved_confirmation(dict(job))
+            
+            # Notify admins and technician
+            tech_id = get_assigned_tech_id(db, job_id)
+            if tech_id:
+                send_notification(db, tech_id, job_id, f"✅ Customer APPROVED estimate for job {job_id}. Please proceed with repair.")
+            notify_all_admins(db, job_id, f"✅ Customer APPROVED estimate for job {job_id}")
+            
+        else:  # rejected
+            db.execute("""
+                UPDATE jobs SET status='estimate_rejected', updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Customer Rejected Estimate via WhatsApp', None, 'Customer replied NO')
+            
+            # Send confirmation to customer
+            job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            send_estimate_rejected_confirmation(dict(job))
+            
+            # Notify admins
+            notify_all_admins(db, job_id, f"❌ Customer REJECTED estimate for job {job_id}. Please arrange return.")
+        
+        db.commit()
+        return jsonify({'status': 'success', 'message': f'Processed {message_body} for job {job_id}'}), 200
+    
+    return jsonify({'status': 'ignored'}), 200
+
+# ─── ROUTES ───────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     if 'user_id' in session:
@@ -294,7 +536,6 @@ def notifications():
         "SELECT * FROM notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 50",
         (user_id,)
     ).fetchall()
-    # Mark all as read
     db.execute("UPDATE notifications SET is_read=1 WHERE recipient_id=?", (user_id,))
     db.commit()
     return render_template('shared/notifications.html', notifications=notifs)
@@ -332,7 +573,6 @@ def api_unread_count():
 @app.route('/api/notifications/poll')
 @login_required
 def api_notifications_poll():
-    """Return latest 50 notifications for the current user (for live polling)."""
     db = get_db()
     user_id = session['user_id']
     notifs = db.execute(
@@ -360,7 +600,6 @@ def api_notifications_poll():
 @app.route('/api/job/<job_id>/status')
 @login_required
 def api_job_status(job_id):
-    """Return current job status, financials, and recent logs for live polling."""
     db = get_db()
     job = db.execute(
         "SELECT j.*, u.name as tech_name FROM jobs j LEFT JOIN users u ON j.assigned_tech_id=u.id WHERE j.job_id=?",
@@ -368,7 +607,6 @@ def api_job_status(job_id):
     ).fetchone()
     if not job:
         return jsonify({'error': 'Job not found'}), 404
-    # Only the assigned tech or an admin/manager can poll
     if session.get('role') not in ('admin', 'manager'):
         if job['assigned_tech_id'] != session['user_id']:
             return jsonify({'error': 'Access denied'}), 403
@@ -523,6 +761,164 @@ def admin_jobs():
     return render_template('admin/jobs.html', jobs=jobs, status_flow=STATUS_FLOW,
                            technicians=technicians, status_filter=status_filter, search=search)
 
+@app.route('/admin/jobs/export')
+@admin_required
+def admin_jobs_export():
+    """Export all jobs to Excel (.xlsx)"""
+    db = get_db()
+    status_filter = request.args.get('status', '')
+    search = request.args.get('search', '')
+
+    query = """
+        SELECT j.job_id, j.customer_name, j.customer_phone, j.customer_email,
+               j.item_type, j.item_description, j.status, j.payment_status,
+               u.name as tech_name,
+               j.parts_cost, j.labour_cost, j.total_amount, j.invoice_total_amount,
+               j.invoice_number, j.payment_method,
+               j.received_at, j.updated_at, j.dispatch_date, j.tracking_number,
+               j.courier_name, j.repair_findings, j.notes
+        FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE 1=1
+    """
+    params = []
+    if status_filter:
+        query += " AND j.status=?"
+        params.append(status_filter)
+    if search:
+        query += " AND (j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?)"
+        params.extend([f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'])
+    query += " ORDER BY j.received_at DESC"
+    jobs = db.execute(query, params).fetchall()
+
+    if not OPENPYXL_AVAILABLE:
+        # Fallback: CSV export
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        headers = ['Job ID','Customer','Phone','Email','Item Type','Description','Status',
+                   'Payment Status','Technician','Parts Cost','Labour Cost','Total Amount',
+                   'Invoice Amount','Invoice #','Payment Method','Received At','Updated At',
+                   'Dispatch Date','Tracking #','Courier','Repair Findings','Notes']
+        writer.writerow(headers)
+        for j in jobs:
+            writer.writerow([
+                j['job_id'], j['customer_name'], j['customer_phone'], j['customer_email'],
+                j['item_type'], j['item_description'],
+                STATUS_FLOW.get(j['status'], {}).get('label', j['status']),
+                j['payment_status'], j['tech_name'],
+                j['parts_cost'] or 0, j['labour_cost'] or 0, j['total_amount'] or 0,
+                j['invoice_total_amount'] or 0, j['invoice_number'], j['payment_method'] or '',
+                j['received_at'], j['updated_at'], j['dispatch_date'],
+                j['tracking_number'], j['courier_name'], j['repair_findings'], j['notes']
+            ])
+        output.seek(0)
+        filename = f"jobs_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
+                         as_attachment=True, download_name=filename)
+
+    # ── Build Excel workbook ───────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jobs Export"
+
+    # Color palette
+    HEADER_FILL   = PatternFill("solid", fgColor="1A1D2E")
+    ALT_FILL      = PatternFill("solid", fgColor="F4F6FF")
+    ACCENT_COLOR  = "4A9EFF"
+    HEADER_FONT   = Font(bold=True, color="FFFFFF", size=11)
+    TITLE_FONT    = Font(bold=True, color="1A1D2E", size=14)
+    MONEY_FONT    = Font(bold=True, color="22C55E", size=11)
+    thin_side     = Side(style='thin', color='D1D5DB')
+    thin_border   = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+    # ── Title row ─────────────────────────────────────────────────────────────
+    ws.merge_cells('A1:V1')
+    title_cell = ws['A1']
+    title_cell.value = f"Maktronics — Jobs Export  ({datetime.datetime.now().strftime('%d %b %Y, %H:%M')})"
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    title_cell.fill = PatternFill("solid", fgColor="EEF4FF")
+    ws.row_dimensions[1].height = 30
+
+    # ── Summary row ───────────────────────────────────────────────────────────
+    ws.merge_cells('A2:V2')
+    total_amt = sum((j['total_amount'] or 0) for j in jobs)
+    paid_count = sum(1 for j in jobs if j['payment_status'] == 'paid')
+    summary = ws['A2']
+    summary.value = (f"Total Jobs: {len(jobs)}   |   "
+                     f"Paid: {paid_count}   |   "
+                     f"Pending: {len(jobs)-paid_count}   |   "
+                     f"Total Revenue: ₹{total_amt:,.2f}")
+    summary.font = Font(italic=True, color="6B7280", size=10)
+    summary.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[2].height = 22
+
+    # ── Column headers ────────────────────────────────────────────────────────
+    COLUMNS = [
+        ('Job ID',           16), ('Customer',        20), ('Phone',          14),
+        ('Email',            24), ('Item Type',        14), ('Description',    28),
+        ('Status',           18), ('Payment Status',  16), ('Technician',      18),
+        ('Parts (₹)',        12), ('Labour (₹)',       12), ('Total (₹)',       13),
+        ('Invoice Amt (₹)',  14), ('Invoice #',        16), ('Payment Method',  18),
+        ('Received At',      18), ('Updated At',       18), ('Dispatch Date',  14),
+        ('Tracking #',       18), ('Courier',          16), ('Repair Findings', 30),
+        ('Notes',            30),
+    ]
+    for col_idx, (header, width) in enumerate(COLUMNS, start=1):
+        cell = ws.cell(row=3, column=col_idx, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+        ws.column_dimensions[cell.column_letter].width = width
+    ws.row_dimensions[3].height = 28
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    money_fmt = '#,##0.00'
+    for row_idx, j in enumerate(jobs, start=4):
+        fill = ALT_FILL if row_idx % 2 == 0 else None
+        status_label = STATUS_FLOW.get(j['status'], {}).get('label', j['status'] or '')
+        row_data = [
+            j['job_id'], j['customer_name'] or '', j['customer_phone'] or '',
+            j['customer_email'] or '', j['item_type'] or '', j['item_description'] or '',
+            status_label, (j['payment_status'] or 'pending').replace('_', ' ').title(),
+            j['tech_name'] or 'Unassigned',
+            j['parts_cost'] or 0, j['labour_cost'] or 0, j['total_amount'] or 0,
+            j['invoice_total_amount'] or 0, j['invoice_number'] or '',
+            (j['payment_method'] or '').replace('_', ' ').title(),
+            j['received_at'] or '', j['updated_at'] or '', j['dispatch_date'] or '',
+            j['tracking_number'] or '', j['courier_name'] or '',
+            j['repair_findings'] or '', j['notes'] or '',
+        ]
+        for col_idx, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical='center', wrap_text=True)
+            if fill:
+                cell.fill = fill
+            # Money columns: 10, 11, 12, 13
+            if col_idx in (10, 11, 12, 13) and isinstance(value, (int, float)):
+                cell.number_format = money_fmt
+                cell.font = Font(color="22C55E", bold=(col_idx == 12))
+
+        ws.row_dimensions[row_idx].height = 20
+
+    # Freeze header rows
+    ws.freeze_panes = 'A4'
+
+    # Auto-filter on header row
+    ws.auto_filter.ref = f"A3:V{max(3, len(jobs)+3)}"
+
+    # ── Save and send ──────────────────────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"maktronics_jobs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=filename)
+
+
 @app.route('/admin/jobs/new', methods=['GET', 'POST'])
 @admin_required
 def admin_new_job():
@@ -530,7 +926,6 @@ def admin_new_job():
         db = get_db()
         job_id = generate_job_id()
         barcode = job_id
-
         tech_id = request.form.get('assigned_tech_id') or None
 
         data = {
@@ -542,7 +937,7 @@ def admin_new_job():
             'item_type': request.form.get('item_type'),
             'barcode': barcode,
             'assigned_tech_id': tech_id,
-            'status': 'sent_for_inspection',  # Always starts here
+            'status': 'sent_for_inspection',
             'notes': request.form.get('notes'),
         }
         db.execute("""
@@ -563,6 +958,10 @@ def admin_new_job():
         log_action(db, job_id, 'Job Created & Sent for Inspection', session['user_id'],
                    f"Customer: {data['customer_name']}")
 
+        # Send WhatsApp notification to customer
+        job_data = dict(data)
+        send_job_created_notification(job_data)
+
         # Notify the assigned technician
         if tech_id:
             tech_name = db.execute("SELECT name FROM users WHERE id=?", (tech_id,)).fetchone()
@@ -574,7 +973,7 @@ def admin_new_job():
             )
 
         db.commit()
-        flash(f'Job {job_id} created and sent for inspection!', 'success')
+        flash(f'Job {job_id} created and sent for inspection! WhatsApp notification sent to customer.', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     db = get_db()
@@ -634,11 +1033,17 @@ def admin_update_job(job_id):
             UPDATE jobs SET status='estimate_approved', estimate_approved_at=?, updated_at=?
             WHERE job_id=?
         """, (now, now, job_id))
-        log_action(db, job_id, 'Estimate Approved', session['user_id'])
+        log_action(db, job_id, 'Estimate Approved by Admin', session['user_id'])
+        
+        # Send WhatsApp confirmation to customer
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_approved_confirmation(dict(job))
+        
         # Immediately move to sent_for_repair
         db.execute("UPDATE jobs SET status='sent_for_repair', updated_at=? WHERE job_id=?",
                    (now, job_id))
         log_action(db, job_id, 'Status → sent_for_repair', session['user_id'])
+        
         # Notify technician
         if tech_id:
             send_notification(
@@ -646,7 +1051,7 @@ def admin_update_job(job_id):
                 f"✅ Estimate approved for job {job_id}. Please proceed with the repair."
             )
         db.commit()
-        flash('Estimate approved — job sent for repair!', 'success')
+        flash('Estimate approved — job sent for repair and customer notified!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     # ── Reject estimate ──────────────────────────────────────────────────────
@@ -656,72 +1061,125 @@ def admin_update_job(job_id):
             UPDATE jobs SET status='estimate_rejected', notes=?, updated_at=?
             WHERE job_id=?
         """, (reason, now, job_id))
-        log_action(db, job_id, 'Estimate Rejected', session['user_id'], reason)
+        log_action(db, job_id, 'Estimate Rejected by Admin', session['user_id'], reason)
+        
+        # Send WhatsApp rejection confirmation
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_rejected_confirmation(dict(job))
+        
         if tech_id:
             send_notification(
                 db, tech_id, job_id,
                 f"🚫 Estimate for job {job_id} was rejected by admin. Reason: {reason}"
             )
         db.commit()
-        flash('Estimate rejected.', 'success')
+        flash('Estimate rejected and customer notified.', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
-    # ── Upload invoice ───────────────────────────────────────────────────────
-    elif action == 'upload_invoice':
+    # ── Upload invoice + select payment method + send (unified) ─────────────
+    elif action == 'upload_invoice_and_send':
         invoice_file = request.files.get('invoice_file')
-        invoice_number = request.form.get('invoice_number')
-        invoice_total_amount = float(request.form.get('invoice_total_amount', 0))
-        invoice_generate_date = request.form.get('invoice_generate_date') or \
-                                datetime.datetime.now().strftime('%Y-%m-%d')
+        invoice_number = request.form.get('invoice_number', '').strip()
+        invoice_total_amount = float(request.form.get('invoice_total_amount', 0) or 0)
+        payment_method = request.form.get('payment_method', 'razorpay')
+        other_notes = request.form.get('other_payment_notes', '').strip()
 
-        if invoice_file and allowed_file(invoice_file.filename):
-            filename = secure_filename(f"INV_{job_id}_{uuid.uuid4().hex[:8]}_{invoice_file.filename}")
-            invoice_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            db.execute("""
-                UPDATE jobs SET
-                    invoice_path=?, invoice_number=?,
-                    invoice_total_amount=?, invoice_generate_date=?,
-                    total_amount=?, status='invoice_uploaded', updated_at=?
-                WHERE job_id=?
-            """, (filename, invoice_number, invoice_total_amount,
-                  invoice_generate_date, invoice_total_amount, now, job_id))
-            log_action(db, job_id, f'Invoice Uploaded: {invoice_number} (₹{invoice_total_amount})',
-                       session['user_id'], f'Date: {invoice_generate_date}')
-            flash('Invoice uploaded successfully!', 'success')
-        else:
-            flash('Please upload a valid invoice file.', 'error')
-        db.commit()
-        return redirect(url_for('admin_job_detail', job_id=job_id))
-
-    # ── Send payment notification (Razorpay) ─────────────────────────────────
-    elif action == 'send_payment_notification':
-        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-        amount_paise = int(float(job['invoice_total_amount'] or job['total_amount'] or 0) * 100)
-        if amount_paise <= 0:
-            flash('Invoice amount must be greater than 0 to create a payment link.', 'error')
+        if not invoice_file or not allowed_file(invoice_file.filename):
+            flash('Please upload a valid invoice file (PDF, PNG, JPG).', 'error')
+            db.commit()
             return redirect(url_for('admin_job_detail', job_id=job_id))
-        try:
-            order = razorpay_client.order.create({
-                'amount': amount_paise,
-                'currency': 'INR',
-                'receipt': job_id,
-                'notes': {
-                    'job_id': job_id,
-                    'customer': job['customer_name'],
-                    'invoice': job['invoice_number'] or '',
-                }
-            })
-            token = uuid.uuid4().hex
-            pay_link = url_for('customer_pay', job_id=job_id, token=token, _external=True)
+
+        if invoice_total_amount <= 0 and payment_method != 'free_of_charge':
+            flash('Invoice amount must be greater than 0.', 'error')
+            db.commit()
+            return redirect(url_for('admin_job_detail', job_id=job_id))
+
+        # ── Save invoice file ──────────────────────────────────────────────────
+        filename = secure_filename(f"INV_{job_id}_{uuid.uuid4().hex[:8]}_{invoice_file.filename}")
+        invoice_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        invoice_url = build_public_url(f'/static/uploads/{filename}')
+
+        db.execute("""
+            UPDATE jobs SET
+                invoice_path=?, invoice_number=?,
+                invoice_total_amount=?, total_amount=?,
+                payment_method=?,
+                status='invoice_uploaded', updated_at=?
+            WHERE job_id=?
+        """, (filename, invoice_number, invoice_total_amount,
+              invoice_total_amount, payment_method, now, job_id))
+
+        log_action(db, job_id,
+                   f'Invoice Uploaded & Sent: {invoice_number or job_id} (₹{invoice_total_amount:.2f}) — {payment_method}',
+                   session['user_id'])
+
+        # Re-fetch job so payment_token etc. are available after update
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        job_dict = dict(job)
+
+        # ── Handle payment method ──────────────────────────────────────────────
+        if payment_method == 'razorpay':
+            amount_paise = int(invoice_total_amount * 100)
+            try:
+                order = razorpay_client.order.create({
+                    'amount': amount_paise, 'currency': 'INR', 'receipt': job_id,
+                    'notes': {'job_id': job_id, 'customer': job['customer_name'],
+                              'invoice': invoice_number or job_id}
+                })
+                token = uuid.uuid4().hex
+                pay_link = build_public_url(f'/pay/{job_id}/{token}')
+                db.execute("""
+                    UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
+                    WHERE job_id=?
+                """, (order['id'], token, pay_link, now, job_id))
+                job_dict['payment_token'] = token  # inject token for template params
+                send_invoice_ready_notification(
+                    job_dict, invoice_total_amount,
+                    job['parts_cost'] or 0, job['labour_cost'] or 0,
+                    invoice_url
+                )
+                flash(f'✅ Invoice sent with Razorpay payment link via WhatsApp!', 'success')
+            except Exception as e:
+                flash(f'Invoice saved but Razorpay error: {str(e)}', 'error')
+
+        elif payment_method == 'cash_cheque':
+            send_invoice_ready_notification(
+                job_dict, invoice_total_amount,
+                job['parts_cost'] or 0, job['labour_cost'] or 0,
+                invoice_url
+            )
+            log_action(db, job_id, 'Payment Method: Cash / Cheque', session['user_id'])
+            flash('✅ Invoice sent via WhatsApp. Customer will pay by Cash / Cheque.', 'success')
+
+        elif payment_method == 'pay_later':
+            send_invoice_ready_notification(
+                job_dict, invoice_total_amount,
+                job['parts_cost'] or 0, job['labour_cost'] or 0,
+                invoice_url
+            )
+            log_action(db, job_id, 'Payment Method: Pay Later', session['user_id'],
+                       f'Amount ₹{invoice_total_amount:.2f} deferred')
+            flash('✅ Invoice sent via WhatsApp. Payment deferred (Pay Later).', 'success')
+
+        elif payment_method == 'free_of_charge':
             db.execute("""
-                UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
-                WHERE job_id=?
-            """, (order['id'], token, pay_link, now, job_id))
-            log_action(db, job_id, 'Payment Notification Sent', session['user_id'],
-                       f'Razorpay Order: {order["id"]}, Amount: ₹{amount_paise/100}')
-            flash(f'Payment link created! Share with customer: {pay_link}', 'success')
-        except Exception as e:
-            flash(f'Razorpay error: {str(e)}', 'error')
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, 'Free of Charge — Payment Waived', session['user_id'])
+            send_payment_received_confirmation(job_dict, 0.0, 'FREE_OF_CHARGE')
+            flash('✅ Marked Free of Charge. Customer notified.', 'success')
+
+        elif payment_method == 'other':
+            send_invoice_ready_notification(
+                job_dict, invoice_total_amount,
+                job['parts_cost'] or 0, job['labour_cost'] or 0,
+                invoice_url
+            )
+            log_action(db, job_id, 'Payment Method: Other', session['user_id'],
+                       other_notes or 'No notes')
+            flash(f'✅ Invoice sent via WhatsApp. Payment arrangement: {other_notes or "other"}.', 'success')
+
         db.commit()
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
@@ -732,8 +1190,18 @@ def admin_update_job(job_id):
             status='payment_received', updated_at=? WHERE job_id=?
         """, (now, now, job_id))
         log_action(db, job_id, 'Payment Received (Manual)', session['user_id'])
+        
+        # Send WhatsApp payment confirmation
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        payment_method = job.get('payment_method', 'manual').upper()
+        send_payment_received_confirmation(
+            dict(job),
+            job['total_amount'] or 0,
+            f'MANUAL-{payment_method}'   # e.g. "MANUAL-CASH_CHEQUE"
+        )
+        
         db.commit()
-        flash('Payment marked as received!', 'success')
+        flash('Payment marked as received and customer notified!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     # ── Dispatch ─────────────────────────────────────────────────────────────
@@ -742,21 +1210,21 @@ def admin_update_job(job_id):
         courier_name = request.form.get('courier_name')
         dispatch_date = request.form.get('dispatch_date')
         expected = request.form.get('expected_delivery')
-        receipt_file = request.files.get('courier_receipt')
-        receipt_path = None
-        if receipt_file and allowed_file(receipt_file.filename):
-            filename = secure_filename(f"COURIER_{job_id}_{uuid.uuid4().hex[:8]}_{receipt_file.filename}")
-            receipt_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            receipt_path = filename
+        
         db.execute("""
             UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
-            courier_receipt_path=?, dispatch_date=?, expected_delivery=?, updated_at=?
+            dispatch_date=?, expected_delivery=?, updated_at=?
             WHERE job_id=?
-        """, (tracking, courier_name, receipt_path, dispatch_date, expected, now, job_id))
+        """, (tracking, courier_name, dispatch_date, expected, now, job_id))
         log_action(db, job_id, 'Dispatched', session['user_id'],
                    f'Courier: {courier_name}, Tracking: {tracking}')
+        
+        # Send WhatsApp dispatch notification
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_dispatched_notification(dict(job), courier_name, tracking, expected)
+        
         db.commit()
-        flash('Job dispatched!', 'success')
+        flash('Job dispatched and customer notified via WhatsApp!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
     # ── Close job ────────────────────────────────────────────────────────────
@@ -782,6 +1250,165 @@ def admin_delete_job(job_id):
     db.commit()
     flash(f'Job {job_id} deleted.', 'success')
     return redirect(url_for('admin_jobs'))
+
+# ─── USER MANAGEMENT (Admin only) ────────────────────────────────────────────
+ALL_PERMISSIONS = {
+    'view_all_jobs':   'View All Jobs',
+    'create_jobs':     'Create Jobs',
+    'edit_jobs':       'Edit Jobs',
+    'delete_jobs':     'Delete Jobs',
+    'upload_invoice':  'Upload Invoice',
+    'manage_payments': 'Manage Payments',
+    'dispatch_jobs':   'Dispatch Jobs',
+    'view_reports':    'View Reports',
+    'manage_users':    'Manage Users',
+    'export_data':     'Export Data',
+}
+
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    db = get_db()
+    rows = db.execute("""
+        SELECT u.*, COUNT(j.id) AS job_count
+        FROM users u
+        LEFT JOIN jobs j ON j.assigned_tech_id = u.id
+        GROUP BY u.id
+        ORDER BY u.role, u.name
+    """).fetchall()
+    users = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['perms'] = json.loads(r['permissions'] or '{}')
+        except Exception:
+            d['perms'] = {}
+        users.append(d)
+    return render_template('admin/users.html', users=users, all_permissions=ALL_PERMISSIONS)
+
+@app.route('/admin/users/add', methods=['POST'])
+@admin_required
+def admin_add_user():
+    username = request.form.get('username', '').strip()
+    password = request.form.get('password', '').strip()
+    name     = request.form.get('name', '').strip()
+    role     = request.form.get('role', 'technician')
+
+    if not username or not password or not name:
+        flash('Username, password and name are required.', 'error')
+        return redirect(url_for('admin_users'))
+
+    db = get_db()
+    if db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone():
+        flash(f'Username "{username}" is already taken.', 'error')
+        return redirect(url_for('admin_users'))
+
+    perms = {k: True for k in ALL_PERMISSIONS if request.form.get(k)}
+    db.execute(
+        "INSERT INTO users (username, password, role, name, permissions) VALUES (?,?,?,?,?)",
+        (username, generate_password_hash(password), role, name, json.dumps(perms))
+    )
+    db.commit()
+    flash(f'User "{name}" created successfully!', 'success')
+    return redirect(url_for('admin_users'))
+
+@app.route('/admin/users/delete/<int:user_id>', methods=['POST'])
+@admin_required
+def admin_delete_user(user_id):
+    if user_id == session['user_id']:
+        flash("You can't delete your own account.", 'error')
+        return redirect(url_for('admin_users'))
+    db = get_db()
+    user = db.execute("SELECT name FROM users WHERE id=?", (user_id,)).fetchone()
+    if user:
+        db.execute("DELETE FROM users WHERE id=?", (user_id,))
+        db.commit()
+        flash(f'User "{user["name"]}" deleted.', 'success')
+    return redirect(url_for('admin_users'))
+
+@app.route('/admin/users/permissions/<int:user_id>', methods=['POST'])
+@admin_required
+def admin_save_permissions(user_id):
+    perms = {k: True for k in ALL_PERMISSIONS if request.form.get(k)}
+    db = get_db()
+    db.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps(perms), user_id))
+    db.commit()
+    flash('Permissions saved successfully.', 'success')
+    return redirect(url_for('admin_users'))
+
+# ─── BACKUP & RESTORE (Admin only) ───────────────────────────────────────────
+import zipfile, shutil, tempfile
+
+@app.route('/admin/backup')
+@admin_required
+def admin_backup_page():
+    """Admin-only backup & restore page."""
+    return render_template('admin/backup.html')
+
+@app.route('/admin/backup/download')
+@admin_required
+def admin_backup_download():
+    """Create and stream a ZIP backup of the database + uploads folder."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    zip_name = f'maktronics_backup_{ts}.zip'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Database
+        if os.path.exists(DB_PATH):
+            zf.write(DB_PATH, 'maktronics.db')
+        # Uploads folder
+        upload_dir = app.config['UPLOAD_FOLDER']
+        if os.path.exists(upload_dir):
+            for root, dirs, files in os.walk(upload_dir):
+                for file in files:
+                    abs_path = os.path.join(root, file)
+                    arc_name = os.path.relpath(abs_path, start=os.path.dirname(upload_dir))
+                    zf.write(abs_path, arc_name)
+    buf.seek(0)
+    return send_file(buf, mimetype='application/zip',
+                     as_attachment=True, download_name=zip_name)
+
+@app.route('/admin/backup/restore', methods=['POST'])
+@admin_required
+def admin_backup_restore():
+    """Restore database from an uploaded ZIP backup."""
+    f = request.files.get('backup_file')
+    if not f or not f.filename.endswith('.zip'):
+        flash('Please upload a valid .zip backup file.', 'error')
+        return redirect(url_for('admin_backup_page'))
+
+    try:
+        buf = io.BytesIO(f.read())
+        with zipfile.ZipFile(buf, 'r') as zf:
+            names = zf.namelist()
+            if 'maktronics.db' not in names:
+                flash('Invalid backup: maktronics.db not found inside ZIP.', 'error')
+                return redirect(url_for('admin_backup_page'))
+
+            # Backup current DB before overwriting
+            if os.path.exists(DB_PATH):
+                ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                shutil.copy2(DB_PATH, f'{DB_PATH}.pre_restore_{ts}.bak')
+
+            # Restore DB
+            with zf.open('maktronics.db') as src:
+                with open(DB_PATH, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
+            # Restore uploads (optional — only if they're in the ZIP)
+            upload_dir = app.config['UPLOAD_FOLDER']
+            for name in names:
+                if name.startswith('static/uploads/') and not name.endswith('/'):
+                    dest = os.path.join(os.path.dirname(upload_dir),
+                                        *name.split('/')[1:])  # strip 'static/'
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with zf.open(name) as src, open(dest, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+
+        flash('✅ Backup restored successfully! The database has been replaced.', 'success')
+    except Exception as e:
+        flash(f'Restore failed: {str(e)}', 'error')
+    return redirect(url_for('admin_backup_page'))
 
 # ─── TECHNICIAN ROUTES ────────────────────────────────────────────────────────
 @app.route('/tech')
@@ -875,6 +1502,10 @@ def tech_update_job(job_id):
             not_repairable_reason=?, updated_at=? WHERE job_id=?
         """, (findings, reason, now, job_id))
         log_action(db, job_id, 'Marked Not Repairable', tech_id, reason)
+        
+        # Send WhatsApp notification to customer
+        send_not_repairable_notification(dict(job), reason)
+        
         notify_all_admins(
             db, job_id,
             f"❌ Job {job_id} marked NOT REPAIRABLE by {session['name']}. "
@@ -884,18 +1515,34 @@ def tech_update_job(job_id):
     # ── Send estimate ────────────────────────────────────────────────────────
     elif action == 'send_estimate':
         estimate_amount = float(request.form.get('estimate_amount', 0))
+        parts_cost = float(request.form.get('parts_cost', 0))
+        labour_cost = float(request.form.get('labour_cost', 0))
         estimate_notes = request.form.get('estimate_notes', '')
         findings = request.form.get('inspection_findings', '')
         db.execute("""
             UPDATE jobs SET status='estimate_sent', inspection_findings=?,
-            estimate_amount=?, estimate_notes=?, estimate_sent_at=?, updated_at=?
+            estimate_amount=?, parts_cost=?, labour_cost=?,
+            estimate_notes=?, estimate_sent_at=?, updated_at=?
             WHERE job_id=?
-        """, (findings, estimate_amount, estimate_notes, now, now, job_id))
+        """, (findings, estimate_amount, parts_cost, labour_cost, estimate_notes, now, now, job_id))
         log_action(db, job_id, f'Estimate Sent: ₹{estimate_amount}', tech_id, estimate_notes)
+
+        # Re-fetch job AFTER update so dict has fresh data
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+        # Send WhatsApp estimate for customer approval
+        result = send_estimate_notification(
+            dict(job),
+            float(job['estimate_amount'] or 0),
+            float(job['parts_cost'] or 0),
+            float(job['labour_cost'] or 0)
+        )
+        print(f"[WhatsApp Estimate] result: {result}")
+
         notify_all_admins(
             db, job_id,
             f"📄 Technician {session['name']} sent estimate ₹{estimate_amount:.2f} "
-            f"for job {job_id}. Please approve or reject."
+            f"for job {job_id}. Customer will approve via WhatsApp."
         )
 
     # ── Repair done ──────────────────────────────────────────────────────────
@@ -1002,6 +1649,11 @@ def verify_payment(job_id):
         (job_id, 'Payment Received via Razorpay', None,
          f'Payment ID: {razorpay_payment_id}, Order: {razorpay_order_id}')
     )
+    
+    # Send WhatsApp payment confirmation
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    send_payment_received_confirmation(dict(job), job['total_amount'] or 0, razorpay_payment_id)
+    
     db.commit()
     return jsonify({'status': 'success', 'redirect': url_for('payment_success', job_id=job_id)})
 
@@ -1040,11 +1692,77 @@ def razorpay_webhook():
                 "INSERT INTO job_logs (job_id, action, performed_by, details) VALUES (?,?,?,?)",
                 (job['job_id'], 'Payment Confirmed via Webhook', None, f'Payment ID: {payment_id}')
             )
+            
+            # Send WhatsApp payment confirmation
+            send_payment_received_confirmation(dict(job), job['total_amount'] or 0, payment_id)
+            
             db.commit()
     return 'OK', 200
 
+# ─── WHATSAPP SETTINGS PAGE (Optional) ────────────────────────────────────────
+@app.route('/admin/whatsapp')
+@admin_required
+def whatsapp_settings():
+    aisensy_configured = bool(AISENSY_API_KEY)
+    return render_template('admin/whatsapp_settings.html', aisensy_configured=aisensy_configured)
+
+# ─── TEST WHATSAPP ENDPOINT (Development only) ───────────────────────────────
+@app.route('/admin/test-whatsapp/<job_id>')
+@admin_required
+def test_whatsapp(job_id):
+    """Test endpoint to manually send WhatsApp messages"""
+    db = get_db()
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not job:
+        flash('Job not found', 'error')
+        return redirect(url_for('admin_dashboard'))
+    
+    result = send_job_created_notification(dict(job))
+    if result.get('success'):
+        flash(f'Test WhatsApp sent to {job["customer_phone"]}', 'success')
+    else:
+        flash(f'WhatsApp test failed: {result.get("error")}', 'error')
+    
+    return redirect(url_for('admin_job_detail', job_id=job_id))
+
+def migrate_db():
+    """Add any missing columns to existing databases (safe to run repeatedly)."""
+    with get_db() as db:
+        # Get existing columns in jobs table
+        existing_cols = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+
+        migrations = [
+            ("payment_method",          "ALTER TABLE jobs ADD COLUMN payment_method TEXT DEFAULT 'razorpay'"),
+            ("invoice_generate_date",   "ALTER TABLE jobs ADD COLUMN invoice_generate_date TIMESTAMP"),
+            ("invoice_total_amount",    "ALTER TABLE jobs ADD COLUMN invoice_total_amount REAL DEFAULT 0"),
+            ("razorpay_order_id",       "ALTER TABLE jobs ADD COLUMN razorpay_order_id TEXT"),
+            ("razorpay_payment_id",     "ALTER TABLE jobs ADD COLUMN razorpay_payment_id TEXT"),
+            ("payment_link",            "ALTER TABLE jobs ADD COLUMN payment_link TEXT"),
+            ("payment_token",           "ALTER TABLE jobs ADD COLUMN payment_token TEXT"),
+            ("whatsapp_message_id",     "ALTER TABLE jobs ADD COLUMN whatsapp_message_id TEXT"),
+            ("estimate_amount",         "ALTER TABLE jobs ADD COLUMN estimate_amount REAL DEFAULT 0"),
+            ("estimate_notes",          "ALTER TABLE jobs ADD COLUMN estimate_notes TEXT"),
+            ("estimate_sent_at",        "ALTER TABLE jobs ADD COLUMN estimate_sent_at TIMESTAMP"),
+            ("estimate_approved_at",    "ALTER TABLE jobs ADD COLUMN estimate_approved_at TIMESTAMP"),
+            ("not_repairable_reason",   "ALTER TABLE jobs ADD COLUMN not_repairable_reason TEXT"),
+            ("sent_back_to_customer_at","ALTER TABLE jobs ADD COLUMN sent_back_to_customer_at TIMESTAMP"),
+            ("inspection_findings",     "ALTER TABLE jobs ADD COLUMN inspection_findings TEXT"),
+            ("courier_name",            "ALTER TABLE jobs ADD COLUMN courier_name TEXT"),
+            ("courier_receipt_path",    "ALTER TABLE jobs ADD COLUMN courier_receipt_path TEXT"),
+        ]
+
+        for col_name, sql in migrations:
+            if col_name not in existing_cols:
+                try:
+                    db.execute(sql)
+                    print(f"[migrate_db] Added column: {col_name}")
+                except Exception as e:
+                    print(f"[migrate_db] Skipped {col_name}: {e}")
+
+        db.commit()
 
 init_db()
+migrate_db()
 
 if __name__ == '__main__':
     app.run(debug=True, port=5015)

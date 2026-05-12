@@ -520,7 +520,7 @@ textarea.form-control{resize:vertical;min-height:80px}
       <div class="sidebar-logo-icon">⚡</div>
       <div class="sidebar-logo-text">
         <h1>MAKTRONICS</h1>
-        <span>Repair Mgmt</span>
+        <span>Repair and Maintenance Management</span>
       </div>
       <button class="sidebar-close" onclick="closeSidebar()" aria-label="Close menu">✕</button>
     </div>
@@ -533,8 +533,11 @@ textarea.form-control{resize:vertical;min-height:80px}
     </nav>
     <div class="sidebar-footer">
       {% if session.role == 'admin' %}
-      <a href="/admin/users" class="nav-item" style="margin-bottom:10px">
+      <a href="/admin/users" class="nav-item" style="margin-bottom:4px">
         <span class="icon">👥</span> Manage Users
+      </a>
+      <a href="/admin/backup" class="nav-item" style="margin-bottom:10px">
+        <span class="icon">💾</span> Backup &amp; Restore
       </a>
       {% endif %}
       <form action="/logout" method="get">

@@ -10,10 +10,7 @@
   <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
   <a href="/admin/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
 </div>
-<div class="nav-section">
-  <div class="nav-label">Management</div>
-  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
-</div>
+
 {% endblock %}
 
 {% block bn_jobs %}active{% endblock %}
@@ -213,6 +210,108 @@
     }
   }
   
+  /* Payment option checkbox cards */
+  .payment-option-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: border-color 0.18s, background 0.18s, box-shadow 0.18s;
+    font-size: 13px;
+    background: var(--bg2);
+    user-select: none;
+    position: relative;
+  }
+  .payment-option-card:hover {
+    border-color: rgba(74,158,255,.5);
+    background: rgba(74,158,255,.04);
+  }
+  .payment-option-card:has(input:checked) {
+    border-color: var(--blue);
+    background: rgba(74,158,255,.09);
+    box-shadow: 0 0 0 1px rgba(74,158,255,.25);
+  }
+  /* Hide native checkbox — we draw a custom tick box */
+  .payment-option-card input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  /* Custom tick box */
+  .pom-tick {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 2px solid var(--border);
+    background: var(--bg3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: border-color 0.15s, background 0.15s;
+    font-size: 13px;
+    color: transparent;
+  }
+  .payment-option-card:has(input:checked) .pom-tick {
+    border-color: var(--blue);
+    background: var(--blue);
+    color: #fff;
+  }
+  .payment-option-card .pom-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    width: 28px;
+    text-align: center;
+  }
+  .payment-option-card strong {
+    display: block;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.3;
+  }
+  .payment-option-card small {
+    display: block;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 1px;
+  }
+  #payment-options-error {
+    display: none;
+    color: #EF5350;
+    font-size: 12px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: rgba(239,83,80,.08);
+    border-radius: 6px;
+  }
+
+  /* ── Unified Invoice Panel styles ── */
+  .form-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1.2px; color: var(--muted); margin: 14px 0 8px;
+  }
+  .payment-method-group {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px;
+  }
+  @media (max-width: 480px) { .payment-method-group { grid-template-columns: 1fr; } }
+  .payment-option { cursor: pointer; }
+  .payment-option input[type="radio"] { display: none; }
+  .payment-option-inner {
+    display: flex; align-items: center; gap: 10px;
+    border: 2px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; transition: border-color .15s, background .15s;
+  }
+  .payment-option input:checked + .payment-option-inner {
+    border-color: var(--accent); background: rgba(74,158,255,.08);
+  }
+  .payment-option-icon { font-size: 20px; flex-shrink: 0; }
+  .payment-option-title { font-size: 13px; font-weight: 600; }
+  .payment-option-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
   /* Print styles for barcode sticker */
   @media print {
     @page {
@@ -305,6 +404,43 @@
             🔒 Job completed
         {% endif %}
     </div>
+</div>
+
+<!-- WhatsApp Notification Status -->
+<div class="card mb-4" style="border-left: 3px solid #25D366;">
+  <div class="card-header">
+    <span class="card-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="#25D366" style="vertical-align:middle;margin-right:4px"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.089.537 4.055 1.474 5.765L0 24l6.388-1.451A11.945 11.945 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.8 9.8 0 01-4.99-1.364l-.356-.213-3.793.861.9-3.697-.232-.374A9.773 9.773 0 012.182 12C2.182 6.57 6.57 2.182 12 2.182S21.818 6.57 21.818 12 17.43 21.818 12 21.818z"/></svg>
+      WhatsApp Notifications
+    </span>
+    <span style="font-size:11px;color:#25D366;font-weight:500">● Auto-sent</span>
+  </div>
+  <div style="font-size:12px;color:var(--muted);line-height:1.8">
+    {% set wa_events = {
+      'sent_for_inspection': '✅ Job Received confirmation sent to client',
+      'estimate_sent': '✅ Estimate details sent to client for approval',
+      'estimate_approved': '✅ Approval + Repair-start notice sent to client',
+      'estimate_rejected': '✅ Rejection notice sent to client',
+      'not_repairable': '✅ Not-repairable notice sent to client',
+      'repair_done': '✅ Repair complete notice sent to client',
+      'invoice_uploaded': '✅ Repair done notice sent to client',
+      'payment_received': '✅ Payment confirmed',
+      'dispatched': '✅ Dispatch + tracking details sent to client',
+      'closed': '✅ Job closed thank-you sent to client',
+    } %}
+    {% for status_key, wa_msg in wa_events.items() %}
+      {% set step_done = all_steps.index(status_key) <= step_idx if status_key in all_steps else False %}
+      <div style="display:flex;align-items:center;gap:6px;padding:2px 0;opacity:{{ '1' if step_done else '0.35' }}">
+        <span>{{ '🟢' if step_done else '⚪' }}</span>
+        <span>{{ wa_msg }}</span>
+      </div>
+    {% endfor %}
+    {% if not job.customer_phone %}
+    <div style="margin-top:6px;padding:6px 8px;background:rgba(239,83,80,.1);border-radius:6px;color:#EF5350;font-size:11px;">
+      ⚠️ No phone number on file — WhatsApp messages cannot be sent
+    </div>
+    {% endif %}
+  </div>
 </div>
 
 <!-- MAIN GRID (desktop: 2 columns, mobile: auto-stack) -->
@@ -466,17 +602,20 @@
         </form>
         {% endif %}
 
-        {# ── ADMIN: repair_done → Upload Invoice ── #}
-        {% if job.status == 'repair_done' %}
-        <button onclick="openModal('uploadInvoiceModal')" class="btn btn-success" style="width:100%">📎 Upload Invoice</button>
+        {# ── ADMIN: repair_done / invoice_uploaded → handled by inline panel below ── #}
+        {% if job.status in ['repair_done', 'invoice_uploaded'] %}
+        <div style="background:rgba(74,158,255,.08);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--muted)">
+          📋 Use the <strong style="color:var(--text)">Invoice &amp; Payment panel</strong> below to upload &amp; send.
+        </div>
         {% endif %}
-
-        {# ── ADMIN: invoice_uploaded → Send Payment Notification ── #}
-        {% if job.status == 'invoice_uploaded' and job.payment_status != 'paid' %}
-        <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
-          <input type="hidden" name="action" value="send_payment_notification">
-          <button type="submit" class="btn btn-blue" style="width:100%">💳 Send Payment Link</button>
-        </form>
+        {% if job.payment_method and job.status not in ['repair_done','invoice_uploaded'] %}
+        <div style="background:rgba(74,158,255,.08);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--muted)">
+          💳 Accepted: <strong style="color:var(--text)">
+            {% for m in job.payment_method.split(',') %}
+              <span style="display:inline-block;background:rgba(74,158,255,.15);border-radius:4px;padding:1px 6px;margin:1px">{{ m.strip()|replace('_',' ')|title }}</span>
+            {% endfor %}
+          </strong>
+        </div>
         {% endif %}
 
         {# ── ADMIN: payment_received → Dispatch ── #}
@@ -500,7 +639,7 @@
         </form>
         {% endif %}
 
-        {# ── Show payment link if already generated ── #}
+        {# ── Show payment link/method if already set ── #}
         {% if job.payment_link %}
         <div style="background:var(--bg3);border-radius:8px;padding:10px;font-size:11px;word-break:break-all;color:var(--blue)">
           🔗 <strong>Payment Link:</strong><br>{{ job.payment_link }}
@@ -554,15 +693,10 @@
   </form>
   {% endif %}
 
-  {% if job.status == 'repair_done' %}
-  <button onclick="openModal('uploadInvoiceModal')" class="btn btn-success" style="flex:1">📎 Upload Invoice</button>
-  {% endif %}
-
-  {% if job.status == 'invoice_uploaded' and job.payment_status != 'paid' %}
-  <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
-    <input type="hidden" name="action" value="send_payment_notification">
-    <button type="submit" class="btn btn-blue" style="width:100%">💳 Send Payment Link</button>
-  </form>
+  {% if job.status in ['repair_done', 'invoice_uploaded'] %}
+  <div style="flex:1;font-size:12px;color:var(--muted);padding:4px 8px;text-align:center">
+    📋 Scroll down — use the Invoice &amp; Payment panel
+  </div>
   {% endif %}
 
   {% if job.status == 'payment_received' %}
@@ -584,42 +718,190 @@
   {% endif %}
 </div>
 
-<!-- MODALS -->
-
-<!-- Upload Invoice Modal (admin, after repair_done) -->
-<div class="modal-overlay" id="uploadInvoiceModal">
-  <div class="modal">
-    <div class="modal-header">
-      <div class="modal-title">📎 Upload Invoice</div>
-      <button class="modal-close" onclick="closeModal('uploadInvoiceModal')">✕</button>
+<!-- ══ INVOICE TRIGGER BUTTON (visible when repair_done or invoice_uploaded) ══ -->
+{% if job.status in ['repair_done', 'invoice_uploaded'] %}
+<div class="card mb-4" style="border-left:3px solid var(--green)">
+  <div class="card-header">
+    <span class="card-title">🧾 Invoice &amp; Payment</span>
+    {% if job.status == 'invoice_uploaded' %}
+    <span style="font-size:11px;background:rgba(77,182,172,.15);color:var(--green);
+                 padding:3px 8px;border-radius:20px;font-weight:600">✅ Invoice on file</span>
+    {% endif %}
+  </div>
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+    <div style="font-size:13px;color:var(--muted)">
+      {% if job.status == 'invoice_uploaded' %}
+        Invoice already sent.
+        {% if job.invoice_path %}
+          <a href="/static/uploads/{{ job.invoice_path }}" target="_blank" style="color:var(--blue);margin-left:6px">📄 View</a>
+        {% endif %}
+        You can re-upload to resend.
+      {% else %}
+        Upload the invoice PDF and choose how the customer will pay.
+      {% endif %}
     </div>
-    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" enctype="multipart/form-data">
-      <input type="hidden" name="action" value="upload_invoice">
-      <div class="modal-body">
-        <div class="form-group">
-          <label class="form-label">Invoice Number *</label>
-          <input type="text" name="invoice_number" class="form-control" placeholder="e.g. INV-2024-001" required>
+    <button onclick="openModal('invoiceModal')" class="btn btn-success" style="min-width:200px">
+      📤 {{ 'Re-send Invoice' if job.status == 'invoice_uploaded' else 'Upload &amp; Send Invoice' }}
+    </button>
+  </div>
+  {% if job.payment_link %}
+  <div class="info-banner green" style="margin-top:10px;word-break:break-all;font-size:11px">
+    🔗 Payment link: <a href="{{ job.payment_link }}" target="_blank" style="color:var(--green)">{{ job.payment_link }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ══ INVOICE MODAL ══════════════════════════════════════════════════════════ -->
+{% if job.status in ['repair_done', 'invoice_uploaded'] %}
+<div class="modal-overlay" id="invoiceModal" style="align-items:flex-end">
+  <div class="modal" style="max-width:540px;width:100%;border-radius:18px 18px 0 0;max-height:92vh;overflow-y:auto;padding-bottom:env(safe-area-inset-bottom,12px)">
+    <div class="modal-header" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-radius:18px 18px 0 0">
+      <div class="modal-title">🧾 Upload Invoice &amp; Send to Customer</div>
+      <button class="modal-close" onclick="closeModal('invoiceModal')">✕</button>
+    </div>
+
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update"
+          enctype="multipart/form-data" id="invoiceForm">
+      <input type="hidden" name="action" value="upload_invoice_and_send">
+      <div class="modal-body" style="padding:16px 20px">
+
+        <!-- ① Invoice File -->
+        <div class="form-section-label">① Invoice File</div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2">
+            <label class="form-label">
+              Upload PDF / Image
+              {% if job.invoice_path %}
+                &nbsp;<a href="/static/uploads/{{ job.invoice_path }}" target="_blank"
+                         style="font-size:11px;color:var(--blue)">📄 View current</a>
+              {% endif %}
+            </label>
+            <input type="file" name="invoice_file" class="form-control"
+                   accept=".pdf,.png,.jpg,.jpeg"
+                   {% if job.status == 'repair_done' %}required{% endif %}>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label class="form-label">Invoice #</label>
+            <input type="text" name="invoice_number" class="form-control"
+                   placeholder="INV-001" value="{{ job.invoice_number or '' }}">
+          </div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Invoice Total Amount (₹) *</label>
-          <input type="number" step="0.01" name="invoice_total_amount" class="form-control" placeholder="0.00" required inputmode="decimal">
+
+        <!-- ② Invoice Amount -->
+        <div class="form-section-label">② Invoice Amount</div>
+        <div style="background:var(--bg3);border-radius:10px;padding:14px;margin-bottom:14px">
+          <div class="form-row" style="margin-bottom:8px">
+            <div class="form-group" style="flex:1">
+              <label class="form-label">Parts (₹)</label>
+              <input type="number" id="inv_parts" step="0.01" min="0"
+                     class="form-control" inputmode="decimal"
+                     value="{{ job.parts_cost or 0 }}" oninput="recalcInvoice()">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label class="form-label">Labour (₹)</label>
+              <input type="number" id="inv_labour" step="0.01" min="0"
+                     class="form-control" inputmode="decimal"
+                     value="{{ job.labour_cost or 0 }}" oninput="recalcInvoice()">
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;
+                      background:var(--bg2);border-radius:8px;padding:10px 14px">
+            <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px">Total</span>
+            <span style="font-size:24px;font-weight:800;color:var(--green)" id="inv_total_display">
+              ₹{{ "%.2f"|format((job.invoice_total_amount or 0) if job.invoice_total_amount else ((job.parts_cost or 0) + (job.labour_cost or 0))) }}
+            </span>
+          </div>
+          <input type="hidden" name="invoice_total_amount" id="inv_total_hidden"
+                 value="{{ job.invoice_total_amount or ((job.parts_cost or 0) + (job.labour_cost or 0)) }}">
         </div>
-        <div class="form-group">
-          <label class="form-label">Invoice Date</label>
-          <input type="date" name="invoice_generate_date" class="form-control" id="inv-date">
+
+        <!-- ③ Payment Method -->
+        <div class="form-section-label">③ How will the customer pay?</div>
+        <div class="payment-method-group">
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="razorpay"
+                   {% if not job.payment_method or job.payment_method == 'razorpay' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">💳</div>
+              <div><div class="payment-option-title">Razorpay Link</div>
+                   <div class="payment-option-sub">Auto payment link</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="cash_cheque"
+                   {% if job.payment_method == 'cash_cheque' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">💵</div>
+              <div><div class="payment-option-title">Cash / Cheque</div>
+                   <div class="payment-option-sub">Pay in person</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="pay_later"
+                   {% if job.payment_method == 'pay_later' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">⏳</div>
+              <div><div class="payment-option-title">Pay Later</div>
+                   <div class="payment-option-sub">Deferred payment</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="free_of_charge"
+                   {% if job.payment_method == 'free_of_charge' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">🎁</div>
+              <div><div class="payment-option-title">Free of Charge</div>
+                   <div class="payment-option-sub">Waive — mark paid</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="other"
+                   {% if job.payment_method == 'other' %}checked{% endif %}
+                   onchange="onPaymentMethodChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">📝</div>
+              <div><div class="payment-option-title">Other</div>
+                   <div class="payment-option-sub">Custom arrangement</div></div>
+            </div>
+          </label>
+
+        </div><!-- /payment-method-group -->
+
+        <!-- Other notes textarea -->
+        <div id="otherNotesBox" style="display:none;margin-top:8px">
+          <textarea name="other_payment_notes" class="form-control" rows="2"
+                    placeholder="Describe the payment arrangement..."></textarea>
         </div>
-        <div class="form-group">
-          <label class="form-label">Invoice File (PDF/Image) *</label>
-          <input type="file" name="invoice_file" class="form-control" accept=".pdf,.jpg,.jpeg,.png" required>
+
+        <!-- Info banner -->
+        <div id="paymentInfoBanner" class="info-banner blue" style="margin-top:10px;font-size:12px">
+          💳 A Razorpay payment link will be generated and sent via WhatsApp.
         </div>
+
+      </div><!-- /modal-body -->
+
+      <div class="modal-footer" style="position:sticky;bottom:0;background:var(--bg2);z-index:2;padding:14px 20px;gap:10px">
+        <button type="button" class="btn btn-secondary" style="flex:1" onclick="closeModal('invoiceModal')">Cancel</button>
+        <button type="submit" class="btn btn-success" style="flex:2;font-size:14px;font-weight:700"
+                onclick="closeModal('invoiceModal')">
+          📤 Send Invoice
+        </button>
       </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" onclick="closeModal('uploadInvoiceModal')">Cancel</button>
-        <button type="submit" class="btn btn-success">Upload &amp; Proceed</button>
-      </div>
+
     </form>
   </div>
 </div>
+{% endif %}
 
 <!-- Reject Estimate Modal (admin) -->
 <div class="modal-overlay" id="rejectEstimateModal">
@@ -643,6 +925,7 @@
     </form>
   </div>
 </div>
+
 
 <!-- Dispatch Modal -->
 <div class="modal-overlay" id="dispatchModal">
@@ -746,6 +1029,40 @@ document.addEventListener('DOMContentLoaded', function() {
     } catch(e) {}
   };
 });
+
+/* ─── UNIFIED INVOICE PANEL SCRIPTS ─────────────────────────────────────────*/
+function recalcInvoice() {
+  var p = parseFloat(document.getElementById('inv_parts').value) || 0;
+  var l = parseFloat(document.getElementById('inv_labour').value) || 0;
+  var total = p + l;
+  document.getElementById('inv_total_display').textContent = '₹' + total.toFixed(2);
+  document.getElementById('inv_total_hidden').value = total.toFixed(2);
+}
+
+var PAY_BANNERS = {
+  razorpay:       '💳 A Razorpay payment link will be generated and sent via WhatsApp.',
+  cash_cheque:    '💵 Invoice will be sent via WhatsApp. Customer will pay by Cash / Cheque in person.',
+  pay_later:      '⏳ Invoice will be sent via WhatsApp. Payment is deferred.',
+  free_of_charge: '🎁 Invoice sent and job marked as Paid (no charge).',
+  other:          '📝 Invoice will be sent via WhatsApp. Describe the arrangement below.',
+};
+
+function onPaymentMethodChange(val) {
+  var notesBox = document.getElementById('otherNotesBox');
+  if (notesBox) notesBox.style.display = val === 'other' ? 'block' : 'none';
+  var banner = document.getElementById('paymentInfoBanner');
+  if (banner) {
+    banner.textContent = PAY_BANNERS[val] || '';
+    banner.className = 'info-banner ' + (val === 'free_of_charge' ? 'green' : 'blue');
+    banner.style.fontSize = '12px';
+    banner.style.marginTop = '10px';
+  }
+}
+
+(function() {
+  var checked = document.querySelector('input[name="payment_method"]:checked');
+  if (checked) onPaymentMethodChange(checked.value);
+})();
 
 function printBarcode() {
   var area = document.getElementById('barcode-print-area');

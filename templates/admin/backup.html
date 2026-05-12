@@ -1,0 +1,278 @@
+{% extends 'shared/base.html' %}
+{% block title %}Backup & Restore — Maktronics{% endblock %}
+{% block page_title %}Backup &amp; Restore{% endblock %}
+{% block page_sub %}Admin only — download or restore your data{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Management</div>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+  <a href="/admin/backup" class="nav-item active"><span class="icon">💾</span> Backup</a>
+</div>
+{% endblock %}
+
+{% block head_styles %}
+<style>
+  .backup-hero {
+    background: linear-gradient(135deg, rgba(74,158,255,.12), rgba(34,197,94,.08));
+    border: 1px solid rgba(74,158,255,.2);
+    border-radius: 16px;
+    padding: 28px 24px;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+  .backup-hero h2 { font-size: 22px; margin: 0 0 6px; font-weight: 700; }
+  .backup-hero p  { font-size: 13px; color: var(--muted); margin: 0; }
+
+  .section-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  @media (max-width: 680px) { .section-grid { grid-template-columns: 1fr; } }
+
+  .backup-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .backup-card-icon { font-size: 36px; text-align: center; }
+  .backup-card-title { font-size: 17px; font-weight: 700; text-align: center; }
+  .backup-card-desc  { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.6; }
+
+  .what-included {
+    background: var(--bg3);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 2;
+  }
+  .what-included strong { color: var(--text); }
+
+  .danger-zone {
+    border: 1px solid rgba(239,83,80,.3);
+    background: rgba(239,83,80,.04);
+    border-radius: 14px;
+    padding: 20px;
+    margin-top: 24px;
+  }
+  .danger-zone h3 { color: #EF5350; font-size: 15px; margin: 0 0 8px; }
+  .danger-zone p  { font-size: 12px; color: var(--muted); margin: 0 0 14px; }
+
+  .restore-drop {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    position: relative;
+  }
+  .restore-drop:hover { border-color: var(--accent); background: rgba(74,158,255,.04); }
+  .restore-drop input[type="file"] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .restore-drop-icon  { font-size: 32px; margin-bottom: 8px; }
+  .restore-drop-label { font-size: 13px; color: var(--muted); }
+  #restore-filename   { font-size: 12px; color: var(--blue); margin-top: 6px; font-weight: 600; }
+
+  .tips-list { list-style: none; padding: 0; margin: 0; }
+  .tips-list li { padding: 5px 0; font-size: 12px; color: var(--muted); display: flex; gap: 8px; }
+  .tips-list li::before { content: "→"; color: var(--accent); flex-shrink: 0; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Flash messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+  <div class="alert alert-{{ 'success' if cat=='success' else 'error' }}" style="margin-bottom:16px">
+    {{ msg }}
+  </div>
+  {% endfor %}
+{% endwith %}
+
+<!-- Hero -->
+<div class="backup-hero">
+  <div style="font-size:48px;margin-bottom:8px">💾</div>
+  <h2>Backup &amp; Restore</h2>
+  <p>Download a complete copy of your database and uploaded files,<br>or restore from a previous backup ZIP.</p>
+</div>
+
+<div class="section-grid">
+
+  <!-- DOWNLOAD BACKUP -->
+  <div class="backup-card">
+    <div class="backup-card-icon">⬇️</div>
+    <div class="backup-card-title">Download Backup</div>
+    <div class="backup-card-desc">
+      Creates a <strong>.zip</strong> file containing your entire database and all
+      uploaded invoice files — ready to save on your PC or upload anywhere.
+    </div>
+
+    <div class="what-included">
+      <strong>What's included:</strong><br>
+      ✅ &nbsp;Full SQLite database (jobs, users, logs, notifications)<br>
+      ✅ &nbsp;All uploaded invoices &amp; photos<br>
+      ✅ &nbsp;Timestamped filename for easy versioning
+    </div>
+
+    <a href="/admin/backup/download"
+       class="btn btn-success"
+       style="width:100%;justify-content:center;font-size:14px;font-weight:700;padding:13px"
+       id="downloadBtn"
+       onclick="onDownloadClick()">
+      ⬇️ Download Backup ZIP
+    </a>
+
+    <ul class="tips-list">
+      <li>Save to your Desktop or a USB drive for safekeeping</li>
+      <li>Upload to Google Drive / Dropbox for cloud storage</li>
+      <li>Make a backup before every major update</li>
+    </ul>
+  </div>
+
+  <!-- RESTORE BACKUP -->
+  <div class="backup-card">
+    <div class="backup-card-icon">⬆️</div>
+    <div class="backup-card-title">Restore from Backup</div>
+    <div class="backup-card-desc">
+      Upload a previously downloaded <strong>.zip</strong> backup to restore
+      your database and files. Your current data will be replaced.
+    </div>
+
+    <div class="danger-zone" style="margin-top:0">
+      <h3>⚠️ Warning</h3>
+      <p>Restoring will <strong>overwrite</strong> the current database. A
+         safety copy of your existing DB is kept automatically before restore.</p>
+
+      <form method="POST" action="/admin/backup/restore" enctype="multipart/form-data"
+            id="restoreForm" onsubmit="return confirmRestore()">
+
+        <div class="restore-drop" id="restoreDrop"
+             onclick="document.getElementById('restoreFile').click()">
+          <input type="file" name="backup_file" id="restoreFile"
+                 accept=".zip" onchange="onFileChosen(this)">
+          <div class="restore-drop-icon">📂</div>
+          <div class="restore-drop-label">Click to select backup .zip file</div>
+          <div id="restore-filename"></div>
+        </div>
+
+        <button type="submit" class="btn btn-danger"
+                style="width:100%;justify-content:center;font-weight:700;padding:13px;margin-top:14px"
+                id="restoreBtn" disabled>
+          ⬆️ Restore Backup
+        </button>
+
+      </form>
+    </div>
+
+    <ul class="tips-list">
+      <li>Only use backups from this same app</li>
+      <li>The app auto-saves a .bak copy before overwriting</li>
+      <li>Refresh the page after restore to see updated data</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- Info footer -->
+<div class="card" style="margin-top:24px;background:rgba(74,158,255,.05);border-color:rgba(74,158,255,.2)">
+  <div class="card-header"><span class="card-title">ℹ️ Backup Tips</span></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;font-size:12px;color:var(--muted);line-height:1.7">
+    <div>
+      <strong style="color:var(--text)">📅 How often?</strong><br>
+      Take a backup weekly at minimum, and always before adding new users or making bulk changes.
+    </div>
+    <div>
+      <strong style="color:var(--text)">☁️ Google Drive</strong><br>
+      Download the ZIP, then drag it into your Google Drive folder or use the Drive web app to upload.
+    </div>
+    <div>
+      <strong style="color:var(--text)">🔒 Keep it safe</strong><br>
+      The ZIP contains customer data. Store it in a private folder, not a shared drive.
+    </div>
+    <div>
+      <strong style="color:var(--text)">♻️ After restore</strong><br>
+      Log out and log back in after restoring to ensure session data is fresh.
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function onFileChosen(input) {
+  var label = document.getElementById('restore-filename');
+  var btn   = document.getElementById('restoreBtn');
+  if (input.files && input.files[0]) {
+    label.textContent = '📎 ' + input.files[0].name;
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  } else {
+    label.textContent = '';
+    btn.disabled = true;
+  }
+}
+
+function confirmRestore() {
+  return confirm(
+    '⚠️ Are you sure you want to restore?\n\n' +
+    'Your current database will be replaced by the backup.\n' +
+    'A safety copy will be saved automatically.\n\n' +
+    'Click OK to continue.'
+  );
+}
+
+function onDownloadClick() {
+  var btn = document.getElementById('downloadBtn');
+  btn.textContent = '⏳ Preparing backup…';
+  btn.style.opacity = '0.7';
+  setTimeout(function() {
+    btn.textContent = '⬇️ Download Backup ZIP';
+    btn.style.opacity = '1';
+  }, 3500);
+}
+
+// Drag-and-drop on restore zone
+var drop = document.getElementById('restoreDrop');
+drop.addEventListener('dragover', function(e) {
+  e.preventDefault();
+  drop.style.borderColor = 'var(--accent)';
+  drop.style.background  = 'rgba(74,158,255,.08)';
+});
+drop.addEventListener('dragleave', function() {
+  drop.style.borderColor = 'var(--border)';
+  drop.style.background  = '';
+});
+drop.addEventListener('drop', function(e) {
+  e.preventDefault();
+  drop.style.borderColor = 'var(--border)';
+  drop.style.background  = '';
+  var file = e.dataTransfer.files[0];
+  if (file && file.name.endsWith('.zip')) {
+    var input = document.getElementById('restoreFile');
+    // Assign via DataTransfer
+    var dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    onFileChosen(input);
+  } else {
+    alert('Please drop a .zip backup file.');
+  }
+});
+</script>
+{% endblock %}
