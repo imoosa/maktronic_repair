@@ -28,6 +28,9 @@ razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
 AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
 
+# ─── ACCOUNTS DEPARTMENT WHATSAPP NUMBER ─────────────────────────────────────
+ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '918551872118')  # ← replace with real number
+
 # ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
 # AiSensy must reach your server from the internet to fetch media (PDF invoices).
 #   Production:  export PUBLIC_BASE_URL=https://yourdomain.com
@@ -54,6 +57,7 @@ TEMPLATE_IDS = {
     'repair_completed_invoice_not_razorpay': 'dev_invoice_sent_other',  # Non-Razorpay invoice
     'payment_received': 'payment_received',
     'product_dispatched': 'product_dispatch',
+    'accounts_department': 'accounts_department',  # Notify accounts to generate invoice
 }
 
 # Helper function to format phone number
@@ -110,6 +114,55 @@ def send_whatsapp_template(to_number, template_name, variables, media_url=None):
         return {'success': False, 'error': str(e), 'details': err_body}
     except Exception as e:
         print(f"[WhatsApp Error] Failed to send {template_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def send_accounts_department_notification(job, total_amount, parts_cost, labour_cost, tech_name='Technician'):
+    """Notify accounts department to generate invoice after tech marks repair done.
+      Template: accounts_department
+      {{1}} customer_name  {{2}} job_id  {{3}} item_type
+      {{4}} ₹total  {{5}} ₹parts  {{6}} ₹labour  {{7}} technician_name
+    """
+    if not ACCOUNTS_WHATSAPP_NUMBER:
+        print('[WhatsApp] ACCOUNTS_WHATSAPP_NUMBER not set — skipping accounts notification')
+        return {'success': False, 'error': 'ACCOUNTS_WHATSAPP_NUMBER not configured'}
+
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        tech_name,                              # {{7}}
+    ]
+
+    # Build payload manually — send to accounts number, not customer
+    url = "https://backend.aisensy.com/campaign/t1/api/v2"
+    payload = {
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": TEMPLATE_IDS['accounts_department'],
+        "destination": ACCOUNTS_WHATSAPP_NUMBER,
+        "userName": variables[0],
+        "source": "api",
+        "templateParams": variables,
+        "tags": [],
+        "attributes": {}
+    }
+    headers = {'Content-Type': 'application/json'}
+    try:
+        print(f"[WhatsApp Accounts] Sending invoice request for job {job.get('job_id')} to {ACCOUNTS_WHATSAPP_NUMBER}")
+        print(f"[WhatsApp Accounts] Payload: {payload}")
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        print(f"[WhatsApp Accounts] Status: {response.status_code} | Body: {response.text}")
+        response.raise_for_status()
+        print(f"[WhatsApp Accounts] Success: {response.json()}")
+        return {'success': True, 'response': response.json()}
+    except requests.exceptions.HTTPError as e:
+        err_body = e.response.text if e.response else str(e)
+        print(f"[WhatsApp Accounts Error] HTTP {e.response.status_code if e.response else '?'} | Body: {err_body}")
+        return {'success': False, 'error': str(e), 'details': err_body}
+    except Exception as e:
+        print(f"[WhatsApp Accounts Error] {str(e)}")
         return {'success': False, 'error': str(e)}
 
 def send_job_created_notification(job):
@@ -1622,10 +1675,21 @@ def tech_update_job(job_id):
         """, (findings, parts, labour, total, now, job_id))
         log_action(db, job_id, 'Repair Done', tech_id,
                    f'Findings: {findings} | Total: ₹{total}')
+
+        # Re-fetch job after update for accurate data
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+        # Notify accounts department to generate invoice
+        accounts_result = send_accounts_department_notification(dict(job), total, parts, labour, session.get('name', 'Technician'))
+        if accounts_result.get('success'):
+            print(f"[Accounts] Invoice request sent to accounts for job {job_id}")
+        else:
+            print(f"[Accounts] Failed to notify accounts for job {job_id}: {accounts_result.get('error')}")
+
         notify_all_admins(
             db, job_id,
             f"✅ Repair completed for job {job_id} by {session['name']}. "
-            f"Total: ₹{total:.2f}. Please upload invoice."
+            f"Total: ₹{total:.2f}. Accounts department notified to generate invoice."
         )
 
     # ── Add photo ────────────────────────────────────────────────────────────
