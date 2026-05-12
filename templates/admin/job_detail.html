@@ -565,9 +565,21 @@
       <div class="card-header"><span class="card-title">🚚 Dispatch</span></div>
       <table style="font-size:13px;width:100%">
         <tr><td style="padding:6px 0;color:var(--muted);width:100px">Tracking #</td><td style="padding:6px 0"><code style="color:var(--accent)">{{ job.tracking_number }}</code></td></tr>
+        <tr><td style="padding:6px 0;color:var(--muted)">Courier</td><td style="padding:6px 0">{{ job.courier_name or '—' }}</td></tr>
         <tr><td style="padding:6px 0;color:var(--muted)">Date</td><td style="padding:6px 0">{{ job.dispatch_date or '—' }}</td></tr>
         <tr><td style="padding:6px 0;color:var(--muted)">Expected</td><td style="padding:6px 0">{{ job.expected_delivery or '—' }}</td></tr>
         {% if job.delivered_at %}<tr><td style="padding:6px 0;color:var(--muted)">Delivered</td><td style="padding:6px 0;color:var(--green)">{{ job.delivered_at[:16] }}</td></tr>{% endif %}
+        {% if job.courier_receipt_path %}
+        <tr>
+          <td style="padding:6px 0;color:var(--muted)">LR / Receipt</td>
+          <td style="padding:6px 0">
+            <a href="/static/uploads/{{ job.courier_receipt_path }}" target="_blank"
+               class="btn btn-secondary btn-xs" style="font-size:11px">
+              📄 View LR
+            </a>
+          </td>
+        </tr>
+        {% endif %}
       </table>
     </div>
     {% endif %}
@@ -934,7 +946,7 @@
       <div class="modal-title">🚚 Dispatch Item</div>
       <button class="modal-close" onclick="closeModal('dispatchModal')">✕</button>
     </div>
-    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" enctype="multipart/form-data">
       <input type="hidden" name="action" value="dispatch">
       <div class="modal-body">
         <div class="form-group">
@@ -955,6 +967,29 @@
             <input type="date" name="expected_delivery" class="form-control">
           </div>
         </div>
+
+        <!-- LR / Courier Receipt Upload -->
+        <div class="form-group" style="margin-top:4px">
+          <label class="form-label">📎 LR / Courier Receipt <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+          <div id="lr-drop-zone" style="border:2px dashed var(--border);border-radius:10px;padding:18px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative">
+            <input type="file" name="courier_receipt" id="lr-file-input"
+                   accept=".pdf,.png,.jpg,.jpeg"
+                   style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%"
+                   onchange="onLRFileChosen(this)">
+            <div id="lr-drop-label">
+              <div style="font-size:22px;margin-bottom:4px">📄</div>
+              <div style="font-size:12px;color:var(--muted)">Click or drag & drop PDF / image</div>
+            </div>
+            <div id="lr-file-name" style="display:none;font-size:12px;color:var(--blue);font-weight:600;margin-top:4px"></div>
+          </div>
+          {% if job.courier_receipt_path %}
+          <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+            Current: <a href="/static/uploads/{{ job.courier_receipt_path }}" target="_blank" style="color:var(--blue)">📄 View existing LR</a>
+            &nbsp;(uploading a new file will replace it)
+          </div>
+          {% endif %}
+        </div>
+
         <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
           📱 Customer will receive a WhatsApp notification with tracking details
         </div>
@@ -1031,6 +1066,45 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 /* ─── UNIFIED INVOICE PANEL SCRIPTS ─────────────────────────────────────────*/
+/* ── LR / Courier Receipt Upload ─────────────────────────────────────────────*/
+function onLRFileChosen(input) {
+  var label = document.getElementById('lr-drop-label');
+  var name  = document.getElementById('lr-file-name');
+  var zone  = document.getElementById('lr-drop-zone');
+  if (input.files && input.files[0]) {
+    name.textContent = '📎 ' + input.files[0].name;
+    name.style.display = 'block';
+    label.style.display = 'none';
+    zone.style.borderColor = 'var(--accent)';
+    zone.style.background  = 'rgba(74,158,255,.06)';
+  }
+}
+
+(function() {
+  var zone = document.getElementById('lr-drop-zone');
+  if (!zone) return;
+  zone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    zone.style.borderColor = 'var(--accent)';
+    zone.style.background  = 'rgba(74,158,255,.08)';
+  });
+  zone.addEventListener('dragleave', function() {
+    zone.style.borderColor = 'var(--border)';
+    zone.style.background  = '';
+  });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    var file = e.dataTransfer.files[0];
+    if (file) {
+      var input = document.getElementById('lr-file-input');
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      onLRFileChosen(input);
+    }
+  });
+})();
+
 function recalcInvoice() {
   var p = parseFloat(document.getElementById('inv_parts').value) || 0;
   var l = parseFloat(document.getElementById('inv_labour').value) || 0;
