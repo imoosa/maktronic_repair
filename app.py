@@ -50,7 +50,8 @@ TEMPLATE_IDS = {
     'estimate_sent': 'estimate_sents',
     'estimate_approved_confirmation': 'estimate_approved',
     'estimate_rejected_confirmation': 'estimate_rejection',
-    'repair_completed_invoice': 'dev_invoice_sent',  # exact AiSensy campaign name
+    'repair_completed_invoice': 'dev_invoice_sent',              # Razorpay payment link invoice
+    'repair_completed_invoice_not_razorpay': 'dev_invoice_sent_other',  # Non-Razorpay invoice
     'payment_received': 'payment_received',
     'product_dispatched': 'product_dispatch',
 }
@@ -176,6 +177,28 @@ def send_invoice_ready_notification(job, total_amount, parts_cost, labour_cost, 
         job.get('payment_token', ''),           # {{8}}
     ]
     return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['repair_completed_invoice'], variables, media_url=invoice_url)
+
+def send_invoice_ready_notification_non_razorpay(job, total_amount, parts_cost, labour_cost, payment_method_label, invoice_url=None):
+    """Template dev_invoice_sent_other — for Cash, Cheque, Pay Later, Other payment methods.
+      No payment link. Params:
+      {{1}} name  {{2}} job_id  {{3}} item_type
+      {{4}} total  {{5}} parts  {{6}} labour  {{7}} payment_method_label
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        payment_method_label,                   # {{7}}
+    ]
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['repair_completed_invoice_not_razorpay'],
+        variables,
+        media_url=invoice_url
+    )
 
 def send_payment_received_confirmation(job, amount, transaction_id):
     """Template 7: Payment Received Confirmation"""
@@ -1145,23 +1168,41 @@ def admin_update_job(job_id):
                 flash(f'Invoice saved but Razorpay error: {str(e)}', 'error')
 
         elif payment_method == 'cash_cheque':
-            send_invoice_ready_notification(
+            # Step 1: Send non-razorpay invoice message
+            send_invoice_ready_notification_non_razorpay(
                 job_dict, invoice_total_amount,
                 job['parts_cost'] or 0, job['labour_cost'] or 0,
+                'Cash / Cheque',
                 invoice_url
             )
-            log_action(db, job_id, 'Payment Method: Cash / Cheque', session['user_id'])
-            flash('✅ Invoice sent via WhatsApp. Customer will pay by Cash / Cheque.', 'success')
+            log_action(db, job_id, 'Payment Method: Cash / Cheque — Invoice Sent', session['user_id'])
+            # Step 2: Mark as paid and send payment received message
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, 'Auto-Marked Paid (Cash / Cheque)', session['user_id'])
+            send_payment_received_confirmation(job_dict, invoice_total_amount, 'CASH_CHEQUE')
+            flash('✅ Invoice sent and payment marked received via WhatsApp (Cash / Cheque).', 'success')
 
         elif payment_method == 'pay_later':
-            send_invoice_ready_notification(
+            # Step 1: Send non-razorpay invoice message
+            send_invoice_ready_notification_non_razorpay(
                 job_dict, invoice_total_amount,
                 job['parts_cost'] or 0, job['labour_cost'] or 0,
+                'Pay Later',
                 invoice_url
             )
-            log_action(db, job_id, 'Payment Method: Pay Later', session['user_id'],
+            log_action(db, job_id, 'Payment Method: Pay Later — Invoice Sent', session['user_id'],
                        f'Amount ₹{invoice_total_amount:.2f} deferred')
-            flash('✅ Invoice sent via WhatsApp. Payment deferred (Pay Later).', 'success')
+            # Step 2: Mark as paid and send payment received message
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, 'Auto-Marked Paid (Pay Later)', session['user_id'])
+            send_payment_received_confirmation(job_dict, invoice_total_amount, 'PAY_LATER')
+            flash('✅ Invoice sent and payment marked received via WhatsApp (Pay Later).', 'success')
 
         elif payment_method == 'free_of_charge':
             db.execute("""
@@ -1173,14 +1214,23 @@ def admin_update_job(job_id):
             flash('✅ Marked Free of Charge. Customer notified.', 'success')
 
         elif payment_method == 'other':
-            send_invoice_ready_notification(
+            # Step 1: Send non-razorpay invoice message
+            send_invoice_ready_notification_non_razorpay(
                 job_dict, invoice_total_amount,
                 job['parts_cost'] or 0, job['labour_cost'] or 0,
+                other_notes or 'Other',
                 invoice_url
             )
-            log_action(db, job_id, 'Payment Method: Other', session['user_id'],
+            log_action(db, job_id, 'Payment Method: Other — Invoice Sent', session['user_id'],
                        other_notes or 'No notes')
-            flash(f'✅ Invoice sent via WhatsApp. Payment arrangement: {other_notes or "other"}.', 'success')
+            # Step 2: Mark as paid and send payment received message
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, 'Auto-Marked Paid (Other)', session['user_id'])
+            send_payment_received_confirmation(job_dict, invoice_total_amount, f'OTHER_{(other_notes or "").upper()[:20]}')
+            flash(f'✅ Invoice sent and payment marked received via WhatsApp ({other_notes or "Other"}).', 'success')
 
         db.commit()
         return redirect(url_for('admin_job_detail', job_id=job_id))
@@ -1212,12 +1262,12 @@ def admin_update_job(job_id):
         courier_name = request.form.get('courier_name')
         dispatch_date = request.form.get('dispatch_date')
         expected = request.form.get('expected_delivery')
-    
+
         # ✅ Save the courier receipt file
         receipt_file = request.files.get('courier_receipt')
         receipt_path = None
         receipt_public_url = None
-    
+
         if receipt_file and receipt_file.filename:
             ext = secure_filename(receipt_file.filename).rsplit('.', 1)[-1].lower()
             filename = f"lr_{job_id}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
@@ -1225,7 +1275,7 @@ def admin_update_job(job_id):
             receipt_file.save(save_path)
             receipt_path = filename
             receipt_public_url = build_public_url(f'/static/uploads/{filename}')
-    
+
         db.execute("""
             UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
             dispatch_date=?, expected_delivery=?, courier_receipt_path=?, updated_at=?
@@ -1233,13 +1283,13 @@ def admin_update_job(job_id):
         """, (tracking, courier_name, dispatch_date, expected, receipt_path, now, job_id))
         log_action(db, job_id, 'Dispatched', session['user_id'],
                    f'Courier: {courier_name}, Tracking: {tracking}')
-    
+
         db.commit()  # ✅ commit before fetching
-    
+
         # ✅ Send WhatsApp with receipt as media
         job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         send_dispatched_notification(dict(job), courier_name, tracking, expected, receipt_public_url)
-    
+
         flash('Job dispatched and customer notified via WhatsApp!', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
