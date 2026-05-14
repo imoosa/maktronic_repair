@@ -269,36 +269,7 @@
 </div>
 
 
-<!-- ═══ 2. WHATSAPP NOTIFICATIONS ═══════════════════════════════════════════ -->
-<div class="card mb-6">
-  <div class="card-header">
-    <span class="card-title">💬 WhatsApp Notifications</span>
-  </div>
-  <div class="wa-notif-list" style="padding:14px 16px">
 
-    {% macro wa_row(label, sub, sent) %}
-    <div class="wa-notif-item {% if sent %}sent{% endif %}">
-      <div class="wa-notif-icon">💬</div>
-      <div class="wa-notif-body">
-        <div class="wa-notif-label">{{ label }}</div>
-        <div class="wa-notif-sub">{{ sub }}</div>
-      </div>
-      <span class="wa-tick {% if sent %}green{% else %}grey{% endif %}">
-        {% if sent %}✅{% else %}⬜{% endif %}
-      </span>
-    </div>
-    {% endmacro %}
-
-    {{ wa_row('Job Created',        'Sent when job was registered',                       wa_job_created) }}
-    {{ wa_row('Estimate Sent',      'Sent when estimate was submitted for approval',       wa_estimate_sent) }}
-    {{ wa_row('Repair Started',     'Sent when estimate approved & repair begun',          wa_repair_start) }}
-    {{ wa_row('Invoice Sent',       'Sent when admin uploads & sends the invoice',         wa_invoice_sent) }}
-    {{ wa_row('Payment Received',   'Sent when payment is confirmed',                     wa_payment_recv) }}
-    {{ wa_row('Dispatched',         'Sent when device is shipped to customer',             wa_dispatched) }}
-    {{ wa_row('Job Closed',         'Sent when job is fully closed',                       wa_closed) }}
-
-  </div>
-</div>
 
 
 <!-- ═══ 3. ACTIONS (placed above info cards, below Journey & WA) ════════════ -->
@@ -376,6 +347,36 @@
   </div>
 </div>
 
+<!-- ═══ 2. WHATSAPP NOTIFICATIONS ═══════════════════════════════════════════ -->
+<div class="card mb-6">
+  <div class="card-header">
+    <span class="card-title">💬 WhatsApp Notifications</span>
+  </div>
+  <div class="wa-notif-list" style="padding:14px 16px">
+
+    {% macro wa_row(label, sub, sent) %}
+    <div class="wa-notif-item {% if sent %}sent{% endif %}">
+      <div class="wa-notif-icon">💬</div>
+      <div class="wa-notif-body">
+        <div class="wa-notif-label">{{ label }}</div>
+        <div class="wa-notif-sub">{{ sub }}</div>
+      </div>
+      <span class="wa-tick {% if sent %}green{% else %}grey{% endif %}">
+        {% if sent %}✅{% else %}⬜{% endif %}
+      </span>
+    </div>
+    {% endmacro %}
+
+    {{ wa_row('Job Created',        'Sent when job was registered',                       wa_job_created) }}
+    {{ wa_row('Estimate Sent',      'Sent when estimate was submitted for approval',       wa_estimate_sent) }}
+    {{ wa_row('Repair Started',     'Sent when estimate approved & repair begun',          wa_repair_start) }}
+    {{ wa_row('Invoice Sent',       'Sent when admin uploads & sends the invoice',         wa_invoice_sent) }}
+    {{ wa_row('Payment Received',   'Sent when payment is confirmed',                     wa_payment_recv) }}
+    {{ wa_row('Dispatched',         'Sent when device is shipped to customer',             wa_dispatched) }}
+    {{ wa_row('Job Closed',         'Sent when job is fully closed',                       wa_closed) }}
+
+  </div>
+</div>
 
 <!-- ═══ 4. TWO-COLUMN DETAIL CARDS ═══════════════════════════════════════════ -->
 <div class="job-detail-container">
