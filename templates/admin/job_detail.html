@@ -397,7 +397,7 @@
         {% elif job.status == 'payment_received' %}
             💰 Payment received - ready for dispatch
         {% elif job.status == 'dispatched' %}
-            🚚 Dispatched - in transit
+            🚚 Dispatched — ready to close job
         {% elif job.status == 'delivered' %}
             🏠 Delivered - ready to close
         {% elif job.status == 'closed' %}
@@ -423,10 +423,10 @@
       'estimate_rejected': '✅ Rejection notice sent to client',
       'not_repairable': '✅ Not-repairable notice sent to client',
       'repair_done': '✅ Repair complete notice sent to client',
-      'invoice_uploaded': '✅ Repair done notice sent to client',
+      'invoice_uploaded': '✅ Invoice sent to client',
       'payment_received': '✅ Payment confirmed',
       'dispatched': '✅ Dispatch + tracking details sent to client',
-      'closed': '✅ Job closed thank-you sent to client',
+      'closed': '✅ Job Closed thank-you sent to client + 2 extra numbers',
     } %}
     {% for status_key, wa_msg in wa_events.items() %}
       {% set step_done = all_steps.index(status_key) <= step_idx if status_key in all_steps else False %}
@@ -635,15 +635,15 @@
         <button onclick="openModal('dispatchModal')" class="btn btn-blue" style="width:100%">🚚 Dispatch Item</button>
         {% endif %}
 
-        {# ── ADMIN: dispatched → Delivered ── #}
+        {# ── ADMIN: dispatched → Close ── #}
         {% if job.status == 'dispatched' %}
         <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
-          <input type="hidden" name="action" value="delivered">
-          <button type="submit" class="btn btn-success" style="width:100%">🏠 Mark Delivered</button>
+          <input type="hidden" name="action" value="close">
+          <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close Job</button>
         </form>
         {% endif %}
 
-        {# ── ADMIN: delivered → Close ── #}
+        {# ── ADMIN: delivered → Close (legacy fallback) ── #}
         {% if job.status == 'delivered' %}
         <form method="POST" action="/admin/jobs/{{ job.job_id }}/update">
           <input type="hidden" name="action" value="close">
@@ -717,8 +717,8 @@
 
   {% if job.status == 'dispatched' %}
   <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" style="flex:1">
-    <input type="hidden" name="action" value="delivered">
-    <button type="submit" class="btn btn-success" style="width:100%">🏠 Delivered</button>
+    <input type="hidden" name="action" value="close">
+    <button type="submit" class="btn btn-secondary" style="width:100%">🔒 Close</button>
   </form>
   {% endif %}
 
@@ -828,72 +828,19 @@
                  value="{{ job.invoice_total_amount or ((job.parts_cost or 0) + (job.labour_cost or 0)) }}">
         </div>
 
-        <!-- ③ Payment Method -->
-        <div class="form-section-label">③ How will the customer pay?</div>
-        <div class="payment-method-group">
-
-          <label class="payment-option">
-            <input type="radio" name="payment_method" value="razorpay"
-                   {% if not job.payment_method or job.payment_method == 'razorpay' %}checked{% endif %}
-                   onchange="onPaymentMethodChange(this.value)">
-            <div class="payment-option-inner">
-              <div class="payment-option-icon">💳</div>
-              <div><div class="payment-option-title">Razorpay Link</div>
-                   <div class="payment-option-sub">Auto payment link</div></div>
-            </div>
-          </label>
-
-          <label class="payment-option">
-            <input type="radio" name="payment_method" value="cash_cheque"
-                   {% if job.payment_method == 'cash_cheque' %}checked{% endif %}
-                   onchange="onPaymentMethodChange(this.value)">
-            <div class="payment-option-inner">
-              <div class="payment-option-icon">💵</div>
-              <div><div class="payment-option-title">Cash / Cheque</div>
-                   <div class="payment-option-sub">Pay in person</div></div>
-            </div>
-          </label>
-
-          <label class="payment-option">
-            <input type="radio" name="payment_method" value="pay_later"
-                   {% if job.payment_method == 'pay_later' %}checked{% endif %}
-                   onchange="onPaymentMethodChange(this.value)">
-            <div class="payment-option-inner">
-              <div class="payment-option-icon">⏳</div>
-              <div><div class="payment-option-title">Pay Later</div>
-                   <div class="payment-option-sub">Deferred payment</div></div>
-            </div>
-          </label>
-
-          <label class="payment-option">
-            <input type="radio" name="payment_method" value="free_of_charge"
-                   {% if job.payment_method == 'free_of_charge' %}checked{% endif %}
-                   onchange="onPaymentMethodChange(this.value)">
-            <div class="payment-option-inner">
-              <div class="payment-option-icon">🎁</div>
-              <div><div class="payment-option-title">Free of Charge</div>
-                   <div class="payment-option-sub">Waive — mark paid</div></div>
-            </div>
-          </label>
-
-          <label class="payment-option">
-            <input type="radio" name="payment_method" value="other"
-                   {% if job.payment_method == 'other' %}checked{% endif %}
-                   onchange="onPaymentMethodChange(this.value)">
-            <div class="payment-option-inner">
-              <div class="payment-option-icon">📝</div>
-              <div><div class="payment-option-title">Other</div>
-                   <div class="payment-option-sub">Custom arrangement</div></div>
-            </div>
-          </label>
-
-        </div><!-- /payment-method-group -->
-
-        <!-- Other notes textarea -->
-        <div id="otherNotesBox" style="display:none;margin-top:8px">
-          <textarea name="other_payment_notes" class="form-control" rows="2"
-                    placeholder="Describe the payment arrangement..."></textarea>
-        </div>
+        <!-- ③ Razorpay Checkbox -->
+        <div class="form-section-label">③ Payment via Razorpay?</div>
+        <label style="display:flex;align-items:center;gap:12px;padding:12px 14px;
+                      background:var(--bg3);border-radius:10px;cursor:pointer;margin-bottom:4px">
+          <input type="checkbox" name="use_razorpay" value="1" id="razorpayCheckbox"
+                 {% if not job.payment_method or job.payment_method == 'razorpay' %}checked{% endif %}
+                 onchange="onRazorpayToggle(this.checked)"
+                 style="width:20px;height:20px;flex-shrink:0;accent-color:var(--blue)">
+          <div>
+            <div style="font-weight:700;font-size:14px">💳 Send with Razorpay payment link</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">Tick if the customer will pay online — sends <em>repair_completed_invoice</em> template</div>
+          </div>
+        </label>
 
         <!-- Info banner -->
         <div id="paymentInfoBanner" class="info-banner blue" style="margin-top:10px;font-size:12px">
@@ -904,12 +851,104 @@
 
       <div class="modal-footer" style="position:sticky;bottom:0;background:var(--bg2);z-index:2;padding:14px 20px;gap:10px">
         <button type="button" class="btn btn-secondary" style="flex:1" onclick="closeModal('invoiceModal')">Cancel</button>
-        <button type="submit" class="btn btn-success" style="flex:2;font-size:14px;font-weight:700"
-                onclick="closeModal('invoiceModal')">
+        <button type="submit" class="btn btn-success" style="flex:2;font-size:14px;font-weight:700">
           📤 Send Invoice
         </button>
       </div>
 
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     PAYMENT METHOD MODAL  (opens automatically after non-Razorpay invoice sent)
+════════════════════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="paymentMethodModal">
+  <div class="modal" style="max-width:480px;width:100%;border-radius:18px 18px 0 0;max-height:92vh;overflow-y:auto;padding-bottom:env(safe-area-inset-bottom,12px)">
+    <div class="modal-header" style="position:sticky;top:0;background:var(--bg2);z-index:2;border-radius:18px 18px 0 0">
+      <div class="modal-title">💰 Select Payment Method</div>
+      <button class="modal-close" onclick="closeModal('paymentMethodModal')">✕</button>
+    </div>
+
+    <form method="POST" action="/admin/jobs/{{ job.job_id }}/update" id="paymentMethodForm">
+      <input type="hidden" name="action" value="confirm_payment_method">
+      <div class="modal-body" style="padding:16px 20px">
+
+        <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+          Invoice has been sent via WhatsApp. Now select how the customer is paying:
+        </p>
+
+        <div class="payment-method-group">
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="cash_cheque"
+                   onchange="onPaymentConfirmChange(this.value)" required>
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">💵</div>
+              <div><div class="payment-option-title">Cash / Cheque</div>
+                   <div class="payment-option-sub">Pay in person</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="pay_later"
+                   onchange="onPaymentConfirmChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">⏳</div>
+              <div><div class="payment-option-title">Pay Later</div>
+                   <div class="payment-option-sub">Deferred — no message sent</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="free_of_charge"
+                   onchange="onPaymentConfirmChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">🎁</div>
+              <div><div class="payment-option-title">Free of Charge</div>
+                   <div class="payment-option-sub">Waive — no message sent</div></div>
+            </div>
+          </label>
+
+          <label class="payment-option">
+            <input type="radio" name="payment_method" value="other"
+                   onchange="onPaymentConfirmChange(this.value)">
+            <div class="payment-option-inner">
+              <div class="payment-option-icon">📝</div>
+              <div><div class="payment-option-title">Other</div>
+                   <div class="payment-option-sub">Custom — no message sent</div></div>
+            </div>
+          </label>
+
+        </div>
+
+        <!-- Cash / Cheque reference number (shown only for cash_cheque) -->
+        <div id="payRefBox" style="display:none;margin-top:12px">
+          <label class="form-label" style="font-size:12px;margin-bottom:4px">
+            Payment Reference Number <span style="color:var(--muted)">(optional — if entered, <em>payment_received</em> message is sent)</span>
+          </label>
+          <input type="text" name="payment_reference" id="payRefInput" class="form-control"
+                 placeholder="e.g. CHQ-001 or cash receipt number">
+        </div>
+
+        <!-- Other notes (shown only for other) -->
+        <div id="payOtherNotes" style="display:none;margin-top:12px">
+          <label class="form-label" style="font-size:12px;margin-bottom:4px">Notes</label>
+          <textarea name="other_payment_notes" class="form-control" rows="2"
+                    placeholder="Describe the payment arrangement..."></textarea>
+        </div>
+
+        <!-- Info banner -->
+        <div id="payConfirmBanner" class="info-banner blue" style="margin-top:10px;font-size:12px;display:none"></div>
+
+      </div><!-- /modal-body -->
+
+      <div class="modal-footer" style="position:sticky;bottom:0;background:var(--bg2);z-index:2;padding:14px 20px;gap:10px">
+        <button type="button" class="btn btn-secondary" style="flex:1" onclick="closeModal('paymentMethodModal')">Skip</button>
+        <button type="submit" class="btn btn-success" style="flex:2;font-size:14px;font-weight:700">
+          ✅ Confirm Payment
+        </button>
+      </div>
     </form>
   </div>
 </div>
@@ -991,12 +1030,12 @@
         </div>
 
         <div style="padding:10px;background:rgba(74,158,255,.1);border:1px solid rgba(74,158,255,.2);border-radius:8px;font-size:12px;color:var(--blue)">
-          📱 Customer will receive a WhatsApp notification with tracking details
+          📱 Customer will receive a WhatsApp dispatch notification with tracking details, then immediately a <strong>Job Closed</strong> thank-you. The job will be <strong>auto-closed</strong> after dispatch.
         </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('dispatchModal')">Cancel</button>
-        <button type="submit" class="btn btn-blue">Dispatch &amp; Notify</button>
+        <button type="submit" class="btn btn-blue">🚚 Dispatch &amp; Close Job</button>
       </div>
     </form>
   </div>
@@ -1114,28 +1153,52 @@ function recalcInvoice() {
 }
 
 var PAY_BANNERS = {
-  razorpay:       '💳 A Razorpay payment link will be generated and sent via WhatsApp.',
-  cash_cheque:    '💵 Invoice will be sent via WhatsApp. Customer will pay by Cash / Cheque in person.',
-  pay_later:      '⏳ Invoice will be sent via WhatsApp. Payment is deferred.',
-  free_of_charge: '🎁 Invoice sent and job marked as Paid (no charge).',
-  other:          '📝 Invoice will be sent via WhatsApp. Describe the arrangement below.',
+  razorpay:    '💳 A Razorpay payment link will be generated and sent via WhatsApp.',
+  non_razorpay:'📄 Invoice will be sent via WhatsApp. You will choose the payment method next.',
 };
 
-function onPaymentMethodChange(val) {
-  var notesBox = document.getElementById('otherNotesBox');
-  if (notesBox) notesBox.style.display = val === 'other' ? 'block' : 'none';
+function onRazorpayToggle(checked) {
   var banner = document.getElementById('paymentInfoBanner');
   if (banner) {
-    banner.textContent = PAY_BANNERS[val] || '';
-    banner.className = 'info-banner ' + (val === 'free_of_charge' ? 'green' : 'blue');
+    banner.textContent = checked ? PAY_BANNERS.razorpay : PAY_BANNERS.non_razorpay;
+    banner.className = 'info-banner blue';
     banner.style.fontSize = '12px';
     banner.style.marginTop = '10px';
   }
 }
 
+// Initialise banner on page load
 (function() {
-  var checked = document.querySelector('input[name="payment_method"]:checked');
-  if (checked) onPaymentMethodChange(checked.value);
+  var cb = document.getElementById('razorpayCheckbox');
+  if (cb) onRazorpayToggle(cb.checked);
+})();
+
+var PAY_CONFIRM_BANNERS = {
+  cash_cheque:    '💵 Enter a reference number to send the payment_received WhatsApp message. Leave blank to skip.',
+  pay_later:      '⏳ No WhatsApp message will be sent.',
+  free_of_charge: '🎁 Job will be marked Free of Charge. No WhatsApp message sent.',
+  other:          '📝 No WhatsApp message will be sent.',
+};
+
+function onPaymentConfirmChange(val) {
+  var refBox   = document.getElementById('payRefBox');
+  var otherBox = document.getElementById('payOtherNotes');
+  var banner   = document.getElementById('payConfirmBanner');
+  if (refBox)   refBox.style.display   = val === 'cash_cheque' ? 'block' : 'none';
+  if (otherBox) otherBox.style.display = val === 'other'       ? 'block' : 'none';
+  if (banner) {
+    banner.textContent = PAY_CONFIRM_BANNERS[val] || '';
+    banner.style.display = banner.textContent ? 'block' : 'none';
+    banner.className = 'info-banner ' + (val === 'free_of_charge' ? 'green' : 'blue');
+  }
+}
+
+// Auto-open paymentMethodModal if redirected with ?open_payment_modal=1
+(function() {
+  if (window.location.search.indexOf('open_payment_modal=1') !== -1) {
+    var el = document.getElementById('paymentMethodModal');
+    if (el) el.classList.add('active');
+  }
 })();
 
 function printBarcode() {
@@ -1182,7 +1245,7 @@ function printBarcode() {
     repair_done:         '✅ Repair complete — awaiting invoice upload',
     invoice_uploaded:    '📎 Invoice uploaded — pending payment',
     payment_received:    '💰 Payment received — ready for dispatch',
-    dispatched:          '🚚 Dispatched — in transit',
+    dispatched:          '🚚 Dispatched — ready to close job',
     closed:              '🔒 Job completed',
     not_repairable:      '❌ Item cannot be repaired',
     estimate_rejected:   '🚫 Estimate rejected by admin',
