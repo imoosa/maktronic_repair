@@ -13,6 +13,7 @@
 
 {% block head_styles %}
 <style>
+  /* ── Layout ─────────────────────────────────────────────────────────────── */
   .job-detail-container {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -41,36 +42,199 @@
   }
   .actions-sticky-mobile .btn { flex:1; min-width:120px; justify-content:center; font-size:12px; padding:10px 8px; }
   .timeline { max-height:340px; overflow-y:auto; padding-right:6px; }
-  .photo-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(85px,1fr)); gap:10px; margin-top:8px; }
-  .photo-thumb { width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:10px; border:1px solid var(--border); cursor:zoom-in; }
+  .photo-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); gap:10px; margin-top:8px; }
+  .photo-thumb { width:100%; aspect-ratio:1/1; object-fit:cover; border-radius:10px; border:2px solid var(--border); cursor:zoom-in; transition: border-color 0.2s, transform 0.15s; }
+  .photo-thumb:hover { border-color: var(--accent); transform: scale(1.03); }
 
-  /* Status pill */
+  /* ── Status pill ─────────────────────────────────────────────────────────── */
   .status-pill {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 12px; border-radius: 20px;
     font-size: 12px; font-weight: 600;
   }
 
-  /* Info banners */
+  /* ── Info banners ────────────────────────────────────────────────────────── */
   .info-banner {
-    border-radius: 8px; padding: 10px 12px; font-size: 12px; margin-bottom: 6px;
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 6px;
   }
   .info-banner.yellow { background:rgba(255,213,79,.1); border:1px solid rgba(255,213,79,.3); color:var(--yellow); }
   .info-banner.green  { background:rgba(77,182,172,.1);  border:1px solid rgba(77,182,172,.3); color:var(--green); }
   .info-banner.red    { background:rgba(239,83,80,.1);   border:1px solid rgba(239,83,80,.3);  color:#EF5350; }
   .info-banner.blue   { background:rgba(74,158,255,.1);  border:1px solid rgba(74,158,255,.2); color:var(--blue); }
   .info-banner.muted  { background:var(--bg3); color:var(--muted); text-align:center; }
+
+  /* ── Repair Journey (bigger, matching admin style) ────────────────────────── */
+  .repair-journey-card {
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .repair-journey-card .card-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .repair-journey-card .card-title {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+
+  /* Progress track — larger, clearer */
+  .progress-track {
+    display: flex;
+    align-items: flex-start;
+    padding: 28px 20px 24px;
+    overflow-x: auto;
+    gap: 0;
+    -webkit-overflow-scrolling: touch;
+  }
+  .progress-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    min-width: 68px;
+    position: relative;
+  }
+  .step-dot {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--bg3);
+    border: 3px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    position: relative;
+    z-index: 2;
+    transition: all 0.25s ease;
+    cursor: default;
+    flex-shrink: 0;
+  }
+  .step-dot.done {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+    font-size: 18px;
+    box-shadow: 0 0 0 4px rgba(77,182,172,0.18);
+  }
+  .step-dot.current {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 5px rgba(74,158,255,0.22);
+    animation: pulse-ring 2s ease infinite;
+  }
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0 rgba(74,158,255,0.4); }
+    70%  { box-shadow: 0 0 0 8px rgba(74,158,255,0); }
+    100% { box-shadow: 0 0 0 0 rgba(74,158,255,0); }
+  }
+  .step-label {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 8px;
+    line-height: 1.3;
+    max-width: 68px;
+    word-break: break-word;
+    font-weight: 500;
+  }
+  .step-dot.done .step-label,
+  .step-dot.current .step-label {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .step-line {
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    margin-top: 18px; /* centers on the 40px dot */
+    min-width: 12px;
+    transition: background 0.3s;
+  }
+  .step-line.done {
+    background: var(--green);
+  }
+
+  /* ── WhatsApp notifications panel ────────────────────────────────────────── */
+  .wa-notif-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 0;
+  }
+  .wa-notif-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--bg3);
+    border: 1.5px solid var(--border);
+    transition: border-color 0.2s;
+    font-size: 14px;
+  }
+  .wa-notif-item.sent {
+    border-color: rgba(37,211,102,0.45);
+    background: rgba(37,211,102,0.07);
+  }
+  .wa-notif-icon {
+    font-size: 22px;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--bg2);
+  }
+  .wa-notif-item.sent .wa-notif-icon {
+    background: rgba(37,211,102,0.15);
+  }
+  .wa-notif-body {
+    flex: 1;
+    min-width: 0;
+  }
+  .wa-notif-label {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .wa-notif-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .wa-tick {
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .wa-tick.green { color: #25D366; }
+  .wa-tick.grey  { color: var(--border); }
 </style>
 {% endblock %}
 
 {% block content %}
 
-<!-- ─── PROGRESS TRACKER ─────────────────────────────────────────────────── -->
-{# Use the simplified status_order; skip terminal branches for display #}
+{# ── Status helpers ─────────────────────────────────────────────────────────── #}
 {% set display_steps = ['sent_for_inspection','estimate_sent','estimate_approved','sent_for_repair','repair_done','invoice_uploaded','payment_received','dispatched','closed'] %}
 {% set step_idx = display_steps.index(job.status) if job.status in display_steps else 0 %}
 
-<div class="card mb-6" style="overflow:hidden">
+{# WhatsApp sent booleans — derived from status milestones #}
+{% set wa_job_created   = true %}
+{% set wa_estimate_sent = job.status in ['estimate_sent','estimate_approved','estimate_rejected','sent_for_repair','repair_done','invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_repair_start  = job.status in ['sent_for_repair','repair_done','invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_invoice_sent  = job.status in ['invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_payment_recv  = job.status in ['payment_received','dispatched','closed'] %}
+{% set wa_dispatched    = job.status in ['dispatched','closed'] %}
+{% set wa_closed        = job.status == 'closed' %}
+
+
+<!-- ═══ 1. REPAIR JOURNEY ═══════════════════════════════════════════════════ -->
+<div class="card repair-journey-card">
   <div class="card-header" style="flex-wrap:wrap;gap:8px">
     <span class="card-title">🗺️ Repair Journey</span>
     {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
@@ -78,12 +242,12 @@
   </div>
 
   {% if job.status == 'not_repairable' %}
-  <div class="info-banner red" style="margin:12px">
+  <div class="info-banner red" style="margin:16px">
     ❌ This device was marked <strong>Not Repairable</strong>.
     {% if job.not_repairable_reason %}Reason: {{ job.not_repairable_reason }}{% endif %}
   </div>
   {% elif job.status == 'estimate_rejected' %}
-  <div class="info-banner red" style="margin:12px">
+  <div class="info-banner red" style="margin:16px">
     🚫 Estimate was <strong>rejected</strong> by admin.
     {% if job.notes %}Reason: {{ job.notes }}{% endif %}
   </div>
@@ -104,6 +268,116 @@
   {% endif %}
 </div>
 
+
+<!-- ═══ 2. WHATSAPP NOTIFICATIONS ═══════════════════════════════════════════ -->
+<div class="card mb-6">
+  <div class="card-header">
+    <span class="card-title">💬 WhatsApp Notifications</span>
+  </div>
+  <div class="wa-notif-list" style="padding:14px 16px">
+
+    {% macro wa_row(label, sub, sent) %}
+    <div class="wa-notif-item {% if sent %}sent{% endif %}">
+      <div class="wa-notif-icon">💬</div>
+      <div class="wa-notif-body">
+        <div class="wa-notif-label">{{ label }}</div>
+        <div class="wa-notif-sub">{{ sub }}</div>
+      </div>
+      <span class="wa-tick {% if sent %}green{% else %}grey{% endif %}">
+        {% if sent %}✅{% else %}⬜{% endif %}
+      </span>
+    </div>
+    {% endmacro %}
+
+    {{ wa_row('Job Created',        'Sent when job was registered',                       wa_job_created) }}
+    {{ wa_row('Estimate Sent',      'Sent when estimate was submitted for approval',       wa_estimate_sent) }}
+    {{ wa_row('Repair Started',     'Sent when estimate approved & repair begun',          wa_repair_start) }}
+    {{ wa_row('Invoice Sent',       'Sent when admin uploads & sends the invoice',         wa_invoice_sent) }}
+    {{ wa_row('Payment Received',   'Sent when payment is confirmed',                     wa_payment_recv) }}
+    {{ wa_row('Dispatched',         'Sent when device is shipped to customer',             wa_dispatched) }}
+    {{ wa_row('Job Closed',         'Sent when job is fully closed',                       wa_closed) }}
+
+  </div>
+</div>
+
+
+<!-- ═══ 3. ACTIONS (placed above info cards, below Journey & WA) ════════════ -->
+<div class="card mb-6 action-card-desktop">
+  <div class="card-header"><span class="card-title">⚡ Actions</span></div>
+  <div style="display:flex;flex-direction:column;gap:10px;padding-bottom:4px">
+
+    {# ── STEP 1: Inspection ── #}
+    {% if job.status == 'sent_for_inspection' %}
+    <div class="info-banner blue">
+      🔍 Inspect this device and choose one of the options below.
+    </div>
+    <button onclick="openModal('notRepairableModal')" class="btn btn-danger" style="width:100%">
+      ❌ Not Repairable
+    </button>
+    <button onclick="openModal('sendEstimateModal')" class="btn btn-success" style="width:100%;margin-top:6px">
+      📄 Send Estimate
+    </button>
+    {% endif %}
+
+    {# ── STEP 2: Estimate sent → waiting for admin ── #}
+    {% if job.status == 'estimate_sent' %}
+    <div class="info-banner yellow">
+      ⏳ Estimate of <strong>₹{{ "%.2f"|format(job.estimate_amount or 0) }}</strong> has been sent.
+      Waiting for admin to approve or reject.
+    </div>
+    {% endif %}
+
+    {# ── STEP 3: Sent for repair ── #}
+    {% if job.status == 'sent_for_repair' %}
+    <div class="info-banner green">
+      ✅ Estimate approved. Please complete the repair and mark it done.
+    </div>
+    <button onclick="openModal('repairDoneModal')" class="btn btn-success" style="width:100%">
+      🔧 Mark Repair Done
+    </button>
+    {% endif %}
+
+    {# ── Repair done — admin handles invoice ── #}
+    {% if job.status == 'repair_done' %}
+    <div class="info-banner green">
+      ✅ Repair completed! Accounts department has been notified via WhatsApp to generate the invoice.
+    </div>
+    {% endif %}
+
+    {# ── Estimate rejected ── #}
+    {% if job.status == 'estimate_rejected' %}
+    <div class="info-banner red">
+      🚫 Estimate was rejected by admin. Contact admin for next steps.
+    </div>
+    {% endif %}
+
+    {# ── Not repairable ── #}
+    {% if job.status == 'not_repairable' %}
+    <div class="info-banner red">
+      ❌ Device marked not repairable. Admin will handle return to customer.
+    </div>
+    {% endif %}
+
+    {# ── Admin-side statuses (read-only for tech) ── #}
+    {% if job.status in ['invoice_uploaded','payment_received','dispatched','closed'] %}
+    <div class="info-banner muted">
+      {{ status_flow.get(job.status,{}).get('icon','•') }}
+      {{ status_flow.get(job.status,{}).get('label', job.status) }} — managed by admin
+    </div>
+    {% endif %}
+
+    {# ── Progress note (available during inspection and repair) ── #}
+    {% if job.status in ['sent_for_inspection','sent_for_repair'] %}
+    <button onclick="openModal('progressModal')" class="btn btn-secondary" style="width:100%;margin-top:4px">
+      📝 Add Progress Note
+    </button>
+    {% endif %}
+
+  </div>
+</div>
+
+
+<!-- ═══ 4. TWO-COLUMN DETAIL CARDS ═══════════════════════════════════════════ -->
 <div class="job-detail-container">
   <!-- ─── LEFT COLUMN ───────────────────────────────────────────────────── -->
   <div>
@@ -129,7 +403,7 @@
       </table>
     </div>
 
-    <!-- Inspection Findings (if any) -->
+    <!-- Inspection Findings -->
     {% if job.inspection_findings %}
     <div class="card mb-4">
       <div class="card-header"><span class="card-title">🔍 Inspection Findings</span></div>
@@ -137,7 +411,7 @@
     </div>
     {% endif %}
 
-    <!-- Estimate (if sent/approved/rejected) -->
+    <!-- Estimate -->
     {% if job.estimate_amount %}
     <div class="card mb-4">
       <div class="card-header"><span class="card-title">📄 Estimate</span></div>
@@ -157,7 +431,7 @@
     </div>
     {% endif %}
 
-    <!-- Repair Details (after repair_done) -->
+    <!-- Repair Details -->
     {% if job.repair_findings %}
     <div class="card mb-4">
       <div class="card-header"><span class="card-title">🔧 Repair Details</span></div>
@@ -194,81 +468,6 @@
 
   <!-- ─── RIGHT COLUMN ──────────────────────────────────────────────────── -->
   <div>
-    <!-- ACTIONS (desktop) -->
-    <div class="card mb-4 action-card-desktop">
-      <div class="card-header"><span class="card-title">⚡ Actions</span></div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-
-        {# ── STEP 1: Inspection ── #}
-        {% if job.status == 'sent_for_inspection' %}
-        <div class="info-banner blue">
-          🔍 Inspect this device and choose one of the options below.
-        </div>
-        <button onclick="openModal('notRepairableModal')" class="btn btn-danger" style="width:100%">
-          ❌ Not Repairable
-        </button>
-        <button onclick="openModal('sendEstimateModal')" class="btn btn-success" style="width:100%;margin-top:6px">
-          📄 Send Estimate
-        </button>
-        {% endif %}
-
-        {# ── STEP 2: Estimate sent → waiting for admin decision ── #}
-        {% if job.status == 'estimate_sent' %}
-        <div class="info-banner yellow">
-          ⏳ Estimate of <strong>₹{{ "%.2f"|format(job.estimate_amount or 0) }}</strong> has been sent.
-          Waiting for admin to approve or reject.
-        </div>
-        {% endif %}
-
-        {# ── STEP 3: Estimate approved → sent for repair, do repair ── #}
-        {% if job.status == 'sent_for_repair' %}
-        <div class="info-banner green">
-          ✅ Estimate approved. Please complete the repair and mark it done.
-        </div>
-        <button onclick="openModal('repairDoneModal')" class="btn btn-success" style="width:100%">
-          🔧 Mark Repair Done
-        </button>
-        {% endif %}
-
-        {# ── Repair done → waiting for admin (invoice etc.) ── #}
-        {% if job.status == 'repair_done' %}
-        <div class="info-banner green">
-          ✅ Repair completed! Accounts department has been notified via WhatsApp to generate the invoice.
-        </div>
-        {% endif %}
-
-        {# ── Estimate rejected ── #}
-        {% if job.status == 'estimate_rejected' %}
-        <div class="info-banner red">
-          🚫 Estimate was rejected by admin. Contact admin for next steps.
-        </div>
-        {% endif %}
-
-        {# ── Not repairable ── #}
-        {% if job.status == 'not_repairable' %}
-        <div class="info-banner red">
-          ❌ Device marked not repairable. Admin will handle return to customer.
-        </div>
-        {% endif %}
-
-        {# ── Admin-side statuses (read-only for tech) ── #}
-        {% if job.status in ['invoice_uploaded','payment_received','dispatched','closed'] %}
-        <div class="info-banner muted">
-          {{ status_flow.get(job.status,{}).get('icon','•') }}
-          {{ status_flow.get(job.status,{}).get('label', job.status) }} — managed by admin
-        </div>
-        {% endif %}
-
-        <!-- Progress note (available during inspection and repair) -->
-        {% if job.status in ['sent_for_inspection','sent_for_repair'] %}
-        <button onclick="openModal('progressModal')" class="btn btn-secondary" style="width:100%;margin-top:4px">
-          📝 Add Progress Note
-        </button>
-        {% endif %}
-
-      </div>
-    </div>
-
     <!-- Activity Log -->
     <div class="card">
       <div class="card-header"><span class="card-title">📜 Activity Log</span></div>
@@ -289,6 +488,7 @@
   </div>
 </div>
 
+
 <!-- ─── MOBILE STICKY ACTIONS ─────────────────────────────────────────────── -->
 <div class="actions-sticky-mobile">
   {% if job.status == 'sent_for_inspection' %}
@@ -299,6 +499,7 @@
   <button onclick="openModal('repairDoneModal')" class="btn btn-success" style="flex:1">🔧 Repair Done</button>
   {% endif %}
 </div>
+
 
 <!-- ═══════════════════════════ MODALS ═══════════════════════════════════════ -->
 
@@ -349,7 +550,6 @@
           <textarea name="inspection_findings" class="form-control" rows="2"
                     placeholder="Briefly describe what you found..."></textarea>
         </div>
-        <!-- hidden field — auto-filled by JS, submitted as estimate_amount -->
         <input type="hidden" name="estimate_amount" id="estimate_amount_hidden" value="0">
         <div class="form-row">
           <div class="form-group">
