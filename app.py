@@ -1,2949 +1,2008 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
-from datetime import date, datetime, timedelta
-import random
-import hashlib
-import secrets
+from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_file
 from functools import wraps
-import os
-import json
-import re
+import sqlite3, os, uuid, datetime, json, io, hmac, hashlib, time
 from werkzeug.utils import secure_filename
-import io
-import base64
-from sqlalchemy import text
-from models import (
-    db,
-    SubscriptionPlan, RegisteredUser, Company, CompanyUser,
-    Client, Order, StockItem,
-    Invoice, InvoiceItem,
-    Estimate, EstimateItem,
-    PurchaseInvoice, PurchaseInvoiceItem, StockPurchaseHistory,
-)
+from werkzeug.security import generate_password_hash, check_password_hash
+import razorpay
+import requests
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
 
 app = Flask(__name__)
-app.secret_key = "nexa-erp-2024-super-secret-key-change-in-production"
+app.secret_key = 'maktronics-secret-key-2024'
+app.config['UPLOAD_FOLDER'] = os.path.join('static', 'uploads')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf'}
 
-# ── Database Configuration ────────────────────────────────────────────────────
-# Change to SQLite - creates a file named 'maktroniks.db' in the instance folder
-# You can change the path as needed
-app.config["SQLALCHEMY_DATABASE_URI"] = (
-    'sqlite:///' + os.path.join(os.path.abspath(os.path.dirname(__file__)), 'maktroniks.db')
-)
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# ─── RAZORPAY CONFIG ──────────────────────────────────────────────────────────
+RAZORPAY_KEY_ID     = 'rzp_test_SmNSnbXRbFyUas'
+RAZORPAY_KEY_SECRET = 'mUiDDcYZ72EzW7pUvtCi4asH'
 
-# SQLite doesn't support ALTER TABLE as well, so we'll need to handle that
-# by setting a pragma for foreign key enforcement
-@app.before_request
-def before_request():
-    if db.engine.url.drivername == 'sqlite':
-        db.session.execute(text('PRAGMA foreign_keys=ON'))
+razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
-db.init_app(app)
+# ─── WHATSAPP CONFIG (AI SENSY) ──────────────────────────────────────────────
+AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5ZmM2NjdjMzYyODIyMGUyN2YzN2JmYyIsIm5hbWUiOiJWZXJvZXhpbXVzIiwiYXBwTmFtZSI6IkFpU2Vuc3kiLCJjbGllbnRJZCI6IjY5ZjlkZmMwMGE4NDk1Mzc4YmY1ZjI5YyIsImFjdGl2ZVBsYW4iOiJGUkVFX0ZPUkVWRVIiLCJpYXQiOjE3NzgxNDg5ODh9.vC-f2uQBFylXeQ0Gq1qUYn_u-qM9UDVqhxMqnO7I-aE')
+AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
 
-# ── Create tables and seed on first startup (works with Gunicorn / Render) ────
-with app.app_context():
-    db.create_all()
-    # seed_database() is defined later in this file; called after all models load
+# ─── ACCOUNTS DEPARTMENT WHATSAPP NUMBER ─────────────────────────────────────
+ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '918551872118')  # ← replace with real number
 
-UPLOAD_FOLDER = 'uploads/purchase_invoices'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'tiff', 'bmp'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB
+# ─── EXTRA NOTIFICATION NUMBERS ──────────────────────────────────────────────
+# These two numbers receive copies of Job Created, Sent for Repair, and Job Closed
+# notifications (in addition to the customer).
+# Format: 91XXXXXXXXXX  (country code + 10-digit number, no spaces/dashes)
+EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '918551872118')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919730667697')  # ← replace with real number
 
-# Create upload folder if not exists
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
+# AiSensy must reach your server from the internet to fetch media (PDF invoices).
+#   Production:  export PUBLIC_BASE_URL=https://yourdomain.com
+#   Local dev:   export PUBLIC_BASE_URL=https://abc123.ngrok.io  (use ngrok)
+PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'https://maktronic-repair-3.onrender.com').rstrip('/')
 
+def build_public_url(path):
+    """Return a publicly accessible URL. path must start with '/'.
+    Returns None if PUBLIC_BASE_URL is not set (media attachment skipped)."""
+    if not PUBLIC_BASE_URL:
+        print(f'[URL] WARNING: PUBLIC_BASE_URL not set — skipping media for: {path}')
+        return None
+    return f'{PUBLIC_BASE_URL}{path}'
+
+
+# Template IDs from approved templates
+TEMPLATE_IDS = {
+    'job_created': 'job_creation',
+    'not_repairable': 'not_repairable',
+    'estimate_sent': 'estimate_sents',
+    'estimate_approved_confirmation': 'estimate_approved',
+    'estimate_rejected_confirmation': 'estimate_rejection',
+    'repair_completed_invoice': 'dev_invoice_sent',              # Razorpay payment link invoice
+    'repair_completed_invoice_not_razorpay': 'dev_invoice_sent_other',  # Non-Razorpay invoice
+    'payment_received': 'payment_received',
+    'product_dispatched': 'product_dispatch',
+    'accounts_department': 'accounts_department',  # Notify accounts to generate invoice
+    'job_closed': 'job_closed',
+    'sent_for_approval': 'sent_for_approval',# Job Closed — thank-you to customer
+}
+
+
+# Helper function to format phone number
+def format_phone_number(phone):
+    if not phone:
+        return None
+    phone = str(phone).strip()
+    phone = ''.join(filter(str.isdigit, phone))
+    if phone.startswith('0'):
+        phone = phone[1:]
+    if not phone.startswith('91') and len(phone) == 10:
+        phone = '91' + phone
+    return phone
+
+def send_whatsapp_template(to_number, template_name, variables, media_url=None):
+    if not AISENSY_API_KEY:
+        return {'success': False, 'error': 'API key not configured'}
+
+    to_number = format_phone_number(to_number)
+    if not to_number:
+        return {'success': False, 'error': 'Invalid phone number'}
+
+    url = "https://backend.aisensy.com/campaign/t1/api/v2"
+
+    payload = {
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": TEMPLATE_IDS.get(template_name, template_name),
+        "destination": to_number,
+        "userName": variables[0] if variables else "Customer",
+        "source": "api",
+        "templateParams": variables,
+        "tags": [],
+        "attributes": {}
+    }
+
+    if media_url:
+        # Derive extension from the actual URL — never hardcode .pdf for image uploads
+        _url_path = media_url.split('?')[0].split('/')[-1]
+        _ext = _url_path.rsplit('.', 1)[-1].lower() if '.' in _url_path else 'pdf'
+        if _ext not in ('pdf', 'jpg', 'jpeg', 'png'):
+            _ext = 'pdf'
+        payload["media"] = {
+            "url": media_url,
+            "filename": f"invoice_{datetime.datetime.now().strftime('%Y%m%d')}.{_ext}"
+        }
+
+    headers = {'Content-Type': 'application/json'}
+
+    try:
+        print(f"[WhatsApp] Sending to URL: {url}")
+        print(f"[WhatsApp] Payload: {payload}")
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response.raise_for_status()
+        print(f"[WhatsApp] Success: {response.json()}")
+        return {'success': True, 'response': response.json()}
+    except requests.exceptions.HTTPError as e:
+        err_body = e.response.text if e.response else str(e)
+        print(f"[WhatsApp Error] Failed to send {template_name}: {e} | Response: {err_body}")
+        return {'success': False, 'error': str(e), 'details': err_body}
+    except Exception as e:
+        print(f"[WhatsApp Error] Failed to send {template_name}: {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def send_accounts_department_notification(job, total_amount, parts_cost, labour_cost, tech_name='Technician'):
+    """Notify accounts department to generate invoice after tech marks repair done.
+      Template: accounts_department
+      {{1}} customer_name  {{2}} job_id  {{3}} item_type
+      {{4}} ₹total  {{5}} ₹parts  {{6}} ₹labour  {{7}} technician_name
+    """
+    if not ACCOUNTS_WHATSAPP_NUMBER:
+        print('[WhatsApp] ACCOUNTS_WHATSAPP_NUMBER not set — skipping accounts notification')
+        return {'success': False, 'error': 'ACCOUNTS_WHATSAPP_NUMBER not configured'}
+
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        tech_name,                              # {{7}}
+    ]
+
+    # Build payload manually — send to accounts number, not customer
+    url = "https://backend.aisensy.com/campaign/t1/api/v2"
+    payload = {
+        "apiKey": AISENSY_API_KEY,
+        "campaignName": TEMPLATE_IDS['accounts_department'],
+        "destination": ACCOUNTS_WHATSAPP_NUMBER,
+        "userName": variables[0],
+        "source": "api",
+        "templateParams": variables,
+        "tags": [],
+        "attributes": {}
+    }
+    headers = {'Content-Type': 'application/json'}
+    try:
+        print(f"[WhatsApp Accounts] Sending invoice request for job {job.get('job_id')} to {ACCOUNTS_WHATSAPP_NUMBER}")
+        print(f"[WhatsApp Accounts] Payload: {payload}")
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        print(f"[WhatsApp Accounts] Status: {response.status_code} | Body: {response.text}")
+        response.raise_for_status()
+        print(f"[WhatsApp Accounts] Success: {response.json()}")
+        return {'success': True, 'response': response.json()}
+    except requests.exceptions.HTTPError as e:
+        err_body = e.response.text if e.response else str(e)
+        print(f"[WhatsApp Accounts Error] HTTP {e.response.status_code if e.response else '?'} | Body: {err_body}")
+        return {'success': False, 'error': str(e), 'details': err_body}
+    except Exception as e:
+        print(f"[WhatsApp Accounts Error] {str(e)}")
+        return {'success': False, 'error': str(e)}
+
+def send_job_created_notification(job):
+    """Template 1: Job Created & Barcode Generated"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        job.get('item_description', 'Issue description') or 'General Service'
+    ]
+    result = send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['job_created'], variables)
+    # Also notify the two extra numbers
+    _send_to_extra_numbers(TEMPLATE_IDS['job_created'], variables)
+    return result
+
+def _send_to_extra_numbers(campaign_name, variables):
+    """Send a WhatsApp template to EXTRA_NOTIFY_NUMBER_1 and EXTRA_NOTIFY_NUMBER_2."""
+    for number in [EXTRA_NOTIFY_NUMBER_1, EXTRA_NOTIFY_NUMBER_2]:
+        # Skip placeholder values
+        if not number or 'XXXXXXXXXX' in number:
+            continue
+        url = "https://backend.aisensy.com/campaign/t1/api/v2"
+        payload = {
+            "apiKey": AISENSY_API_KEY,
+            "campaignName": campaign_name,
+            "destination": format_phone_number(number),
+            "userName": variables[0] if variables else "Customer",
+            "source": "api",
+            "templateParams": variables,
+            "tags": [],
+            "attributes": {}
+        }
+        headers = {'Content-Type': 'application/json'}
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            print(f"[WhatsApp Extra] Sent to {number}: {resp.json()}")
+        except Exception as e:
+            print(f"[WhatsApp Extra] Failed to send to {number}: {e}")
+
+def _send_repair_started_extra_notification(job):
+    """Notify extra numbers when a job is sent for repair."""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        
+    ]
+    _send_to_extra_numbers(TEMPLATE_IDS['sent_for_approval'], variables)
+
+def _send_job_closed_extra_notification(job):
+    """Notify extra numbers when a job is closed — uses job_closed template (3 vars)."""
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}} name
+        job.get('job_id', 'N/A'),               # {{2}} job ID
+        job.get('item_type', 'Device'),          # {{3}} device
+    ]
+    _send_to_extra_numbers(TEMPLATE_IDS['job_closed'], variables)
+
+def send_job_closed_notification(job):
+    """Send Job Closed thank-you to customer + extra numbers.
+    Template: job_closed
+    {{1}} customer_name  {{2}} job_id  {{3}} item_type
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),          # {{3}}
+    ]
+    # Send to customer
+    result = send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['job_closed'], variables)
+    print(f"[WhatsApp Job Closed] Customer result: {result}")
+    # Send to both extra numbers
+    _send_to_extra_numbers(TEMPLATE_IDS['job_closed'], variables)
+    return result
+def send_not_repairable_notification(job, reason):
+    """Template 2: Device Not Repairable"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        reason
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['not_repairable'], variables)
+
+def send_estimate_notification(job, estimate_amount, parts_cost, labour_cost):
+    """Template 3: Estimate Sent (with YES/NO approval flow)"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        f"{estimate_amount:.2f}",
+        f"{parts_cost:.2f}",
+        f"{labour_cost:.2f}"
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_sent'], variables)
+
+def send_estimate_approved_confirmation(job):
+    """Template 4: Estimate Approved Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A')
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_approved_confirmation'], variables)
+
+def send_estimate_rejected_confirmation(job):
+    """Template 5: Estimate Rejected Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A')
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['estimate_rejected_confirmation'], variables)
+
+def send_invoice_ready_notification(job, total_amount, parts_cost, labour_cost, invoice_url=None):
+    """Template dev_invoice_sent — 8 params matching AiSensy template:
+      {{1}} name  {{2}} job_id  {{3}} item_type
+      {{4}} ₹total  {{5}} ₹parts  {{6}} ₹labour
+      {{7}} job_id (for payment URL)  {{8}} payment_token (for payment URL)
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        job.get('job_id', 'N/A'),               # {{7}}
+        job.get('payment_token', ''),           # {{8}}
+    ]
+    return send_whatsapp_template(job.get('customer_phone'), TEMPLATE_IDS['repair_completed_invoice'], variables, media_url=invoice_url)
+
+def send_invoice_ready_notification_non_razorpay(job, total_amount, parts_cost, labour_cost, payment_method_label, invoice_url=None):
+    """Template dev_invoice_sent_other — for Cash, Cheque, Pay Later, Other payment methods.
+      No payment link. Params:
+      {{1}} name  {{2}} job_id  {{3}} item_type
+      {{4}} total  {{5}} parts  {{6}} labour  {{7}} payment_method_label
+    """
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        job.get('job_id', 'N/A'),               # {{2}}
+        job.get('item_type', 'Device'),         # {{3}}
+        f"\u20b9{total_amount:.2f}",           # {{4}}
+        f"\u20b9{parts_cost:.2f}",             # {{5}}
+        f"\u20b9{labour_cost:.2f}",            # {{6}}
+        payment_method_label,                   # {{7}}
+    ]
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['repair_completed_invoice_not_razorpay'],
+        variables,
+        media_url=invoice_url
+    )
+
+def send_payment_received_confirmation(job, amount, transaction_id):
+    """Template 7: Payment Received Confirmation"""
+    variables = [
+        job.get('customer_name', 'Customer'),   # {{1}}
+        f"{amount:.2f}",                        # {{2}}
+        job.get('job_id', 'N/A'),               # {{3}}
+        transaction_id,                          # {{4}}
+        datetime.datetime.now().strftime('%d/%m/%Y')  # {{5}}
+    ]
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['payment_received'],
+        variables
+    )
+
+def send_dispatched_notification(job, courier_name, tracking_number, expected_delivery, media_url=None):
+    variables = [
+        job.get('customer_name', 'Customer'),
+        job.get('job_id', 'N/A'),
+        job.get('item_type', 'Device'),
+        courier_name or 'Our Courier Partner',
+        tracking_number or 'N/A',
+        expected_delivery or '3-5 business days'
+    ]
+    return send_whatsapp_template(
+        job.get('customer_phone'),
+        TEMPLATE_IDS['product_dispatched'],
+        variables,
+        media_url=media_url  # ✅ pass receipt image
+    )
+
+def send_payment_link_via_whatsapp(job, payment_link, amount):
+    """Payment link is embedded in dev_invoice_sent template via {{7}} job_id + {{8}} token.
+    This is called after send_invoice_ready_notification so the token is already saved.
+    No separate message needed — just logs the link for reference.
+    """
+    if not payment_link:
+        print(f"[WhatsApp] pay_link is None for {job.get('job_id')} — set PUBLIC_BASE_URL env var")
+        return {'success': False, 'error': 'payment_link is None (PUBLIC_BASE_URL not set?)'}
+    print(f"[WhatsApp] Payment link for {job.get('job_id')}: {payment_link} (embedded in invoice template)")
+    return {'success': True, 'note': 'payment link already sent via invoice template'}
+
+@app.context_processor
+def inject_globals():
+    def _has_perm(perm):
+        if not session.get('user_id'):
+            return False
+        if session.get('role') == 'admin':
+            return True
+        db = get_db()
+        user = db.execute("SELECT permissions FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        if not user:
+            return False
+        try:
+            return json.loads(user['permissions'] or '{}').get(perm, False)
+        except Exception:
+            return False
+
+    def _unread_count():
+        if not session.get('user_id'):
+            return 0
+        db = get_db()
+        row = db.execute(
+            "SELECT COUNT(*) FROM notifications WHERE recipient_id=? AND is_read=0",
+            (session['user_id'],)
+        ).fetchone()
+        return row[0] if row else 0
+
+    return dict(has_perm=_has_perm, unread_notif_count=_unread_count)
+
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+DB_PATH = 'maktronics.db'
+
+# ─── STATUS FLOW ──────────────────────────────────────────────────────────────
+STATUS_FLOW = {
+    'sent_for_inspection': {'label': 'Sent for Inspection', 'icon': '🔍', 'color': '#FFB74D'},
+    'not_repairable':      {'label': 'Not Repairable',      'icon': '❌', 'color': '#EF5350'},
+    'estimate_sent':       {'label': 'Estimate Sent',       'icon': '📄', 'color': '#FFD54F'},
+    'estimate_approved':   {'label': 'Estimate Approved',   'icon': '👍', 'color': '#4DB6AC'},
+    'estimate_rejected':   {'label': 'Estimate Rejected',   'icon': '🚫', 'color': '#EF5350'},
+    'sent_for_repair':     {'label': 'Sent for Repair',     'icon': '🔧', 'color': '#F06292'},
+    'repair_done':         {'label': 'Repair Done',         'icon': '✅', 'color': '#4DB6AC'},
+    'invoice_uploaded':    {'label': 'Invoice Uploaded',    'icon': '📎', 'color': '#AED581'},
+    'payment_received':    {'label': 'Payment Received',    'icon': '💰', 'color': '#66BB6A'},
+    'dispatched':          {'label': 'Dispatched',          'icon': '🚚', 'color': '#4DD0E1'},
+    'closed':              {'label': 'Closed',              'icon': '🔒', 'color': '#90A4AE'},
+}
+
+STATUS_ORDER = [
+    'sent_for_inspection', 'estimate_sent', 'estimate_approved',
+    'sent_for_repair', 'repair_done', 'invoice_uploaded',
+    'payment_received', 'dispatched', 'closed',
+]
+
+# ─── DB SETUP ─────────────────────────────────────────────────────────────────
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    with get_db() as db:
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin','technician','manager')),
+                name TEXT NOT NULL,
+                permissions TEXT DEFAULT "{}",
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT UNIQUE NOT NULL,
+                customer_name TEXT,
+                customer_phone TEXT,
+                customer_email TEXT,
+                item_description TEXT,
+                item_type TEXT,
+                barcode TEXT,
+                status TEXT DEFAULT 'sent_for_inspection',
+                assigned_tech_id INTEGER,
+                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                repair_findings TEXT,
+                parts_cost REAL DEFAULT 0,
+                labour_cost REAL DEFAULT 0,
+                total_amount REAL DEFAULT 0,
+                invoice_number TEXT,
+                payment_status TEXT DEFAULT 'pending',
+                payment_received_at TIMESTAMP,
+                tracking_number TEXT,
+                dispatch_date TEXT,
+                expected_delivery TEXT,
+                delivered_at TIMESTAMP,
+                notes TEXT,
+                invoice_path TEXT,
+                courier_name TEXT,
+                courier_receipt_path TEXT,
+                estimate_amount REAL DEFAULT 0,
+                estimate_notes TEXT,
+                estimate_sent_at TIMESTAMP,
+                estimate_approved_at TIMESTAMP,
+                not_repairable_reason TEXT,
+                sent_back_to_customer_at TIMESTAMP,
+                inspection_findings TEXT,
+                invoice_generate_date TIMESTAMP,
+                invoice_total_amount REAL DEFAULT 0,
+                razorpay_order_id TEXT,
+                razorpay_payment_id TEXT,
+                payment_link TEXT,
+                payment_token TEXT,
+                whatsapp_message_id TEXT,
+                payment_method TEXT DEFAULT 'razorpay',
+                FOREIGN KEY(assigned_tech_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS job_photos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                photo_path TEXT NOT NULL,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS job_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                performed_by INTEGER,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(performed_by) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_id INTEGER NOT NULL,
+                job_id TEXT NOT NULL,
+                message TEXT NOT NULL,
+                is_read INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(recipient_id) REFERENCES users(id)
+            );
+        ''')
+
+        # Seed default users
+        existing = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()
+        if not existing:
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('admin', generate_password_hash('admin123'), 'admin', 'Admin User'))
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('tech1', generate_password_hash('tech123'), 'technician', 'Ravi Kumar'))
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('tech2', generate_password_hash('tech456'), 'technician', 'Suresh Patil'))
+        db.commit()
+
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# ── Helper / Auth ─────────────────────────────────────────────────────────────
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+def generate_job_id():
+    now = datetime.datetime.now()
+    return f"MAK-{now.strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
 
-def verify_password(password: str, hashed: str) -> bool:
-    return hash_password(password) == hashed
+def log_action(db, job_id, action, user_id, details=''):
+    db.execute("INSERT INTO job_logs (job_id, action, performed_by, details) VALUES (?,?,?,?)",
+               (job_id, action, user_id, details))
 
-def get_current_user():
-    return session.get("user", {})
+def send_notification(db, recipient_id, job_id, message):
+    db.execute(
+        "INSERT INTO notifications (recipient_id, job_id, message) VALUES (?,?,?)",
+        (recipient_id, job_id, message)
+    )
 
-@app.context_processor
-def inject_user():
-    """Automatically inject `user` and `company` into every template."""
-    return {
-        "user": session.get("user", {}),
-    }
+def notify_all_admins(db, job_id, message):
+    admins = db.execute(
+        "SELECT id FROM users WHERE role IN ('admin','manager')"
+    ).fetchall()
+    for admin in admins:
+        send_notification(db, admin['id'], job_id, message)
 
-def get_current_company():
-    return session.get("active_company_id") or session.get("user", {}).get("company_id")
+def get_assigned_tech_id(db, job_id):
+    row = db.execute("SELECT assigned_tech_id FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return row['assigned_tech_id'] if row else None
 
+# ─── AUTH ─────────────────────────────────────────────────────────────────────
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if "user" not in session:
-            flash("Please login to continue")
-            return redirect(url_for("login"))
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated
 
-def owner_required(f):
+def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        user = get_current_user()
-        if user.get("role") not in ["owner", "super_admin"]:
-            flash("Only company owner can access this page")
-            return redirect(url_for("dashboard"))
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        if session.get('role') not in ('admin', 'manager'):
+            flash('Admin access required.', 'error')
+            return redirect(url_for('tech_dashboard'))
         return f(*args, **kwargs)
     return decorated
 
-def super_admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        user = get_current_user()
-        if user.get("role") != "super_admin":
-            flash("Super admin access required")
-            return redirect(url_for("dashboard"))
-        return f(*args, **kwargs)
-    return decorated
-
-
-# ── OCR Extraction Service ────────────────────────────────────────────────────
-# OCR via pytesseract has been removed. These stubs keep the rest of the
-# codebase intact; the /purchase/upload-ocr endpoint will return a clear
-# "not available" message instead of crashing.
-
-def extract_invoice_from_image(image_data):
-    """OCR extraction is not available on this deployment."""
-    return ""
-
-
-def extract_invoice_from_pdf(pdf_bytes):
-    """OCR extraction is not available on this deployment."""
-    return ""
-
-
-def normalize_date(date_str):
-    """Convert various date formats to YYYY-MM-DD"""
-    if not date_str:
-        return ""
-
-    MONTH_NAMES = {
-        'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
-        'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
-    }
-
-    date_str = date_str.strip()
-
-    # Named month: "January 25, 2016" or "25 January 2016"
-    for month_name, month_num in MONTH_NAMES.items():
-        if month_name in date_str.lower():
-            # Month Day, Year  →  January 25, 2016
-            m = re.search(rf'{month_name}\s+(\d{{1,2}}),?\s+(\d{{4}})', date_str, re.IGNORECASE)
-            if m:
-                return f"{m.group(2)}-{month_num:02d}-{int(m.group(1)):02d}"
-            # Day Month Year  →  25 January 2016
-            m = re.search(rf'(\d{{1,2}})\s+{month_name}\s+(\d{{4}})', date_str, re.IGNORECASE)
-            if m:
-                return f"{m.group(2)}-{month_num:02d}-{int(m.group(1)):02d}"
-
-    # YYYY-MM-DD
-    m = re.search(r'(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})', date_str)
-    if m:
-        return f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}"
-
-    # DD/MM/YYYY (Indian format assumed)
-    m = re.search(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})', date_str)
-    if m:
-        day, month, year = m.group(1), m.group(2), m.group(3)
-        if len(year) == 2:
-            year = f"20{year}"
-        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-
-    return date_str
-
-
-def _extract_amount(s):
-    """Parse a currency string like '$85.00' or '1,234.50' into float."""
-    cleaned = re.sub(r'[^\d.]', '', s.replace(',', ''))
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
-
-
-def parse_invoice_data(extracted_text):
-    """Intelligently parse OCR extracted text to extract invoice information"""
+# ─── WHATSAPP WEBHOOK (Handles YES/NO replies) ───────────────────────────────
+@app.route('/whatsapp/webhook', methods=['POST'])
+def whatsapp_webhook():
+    """Handle incoming WhatsApp messages from AI Sensy - processes YES/NO responses"""
+    data = request.json
     
-    if not extracted_text or len(extracted_text.strip()) < 10:
-        return {
-            "invoice_number": "",
-            "date": "",
-            "due_date": "",
-            "supplier_name": "",
-            "supplier_gst": "",
-            "items": [],
-            "subtotal": 0,
-            "tax_amount": 0,
-            "grand_total": 0,
-            "payment_terms": "",
-            "error": "Could not extract text"
-        }
+    if not data:
+        return jsonify({'status': 'error', 'message': 'No data received'}), 400
     
-    data = {
-        "invoice_number": "",
-        "date": "",
-        "due_date": "",
-        "supplier_name": "",
-        "supplier_gst": "",
-        "items": [],
-        "subtotal": 0,
-        "tax_amount": 0,
-        "grand_total": 0,
-        "payment_terms": ""
-    }
+    from_number = data.get('from', '')
+    message_body = data.get('message', '').lower().strip()
+    job_id = data.get('context', {}).get('job_id')
     
-    print("=== OCR Extracted Text ===")
-    print(extracted_text[:1000])
-    print("==========================")
+    # If job_id not in context, try to find by phone number
+    if not job_id:
+        db = get_db()
+        phone_raw = from_number[-10:] if len(from_number) >= 10 else from_number
+        job = db.execute(
+            "SELECT job_id, status FROM jobs WHERE customer_phone LIKE ?",
+            (f'%{phone_raw}%',)
+        ).fetchone()
+        if job and job['status'] == 'estimate_sent':
+            job_id = job['job_id']
     
-    # Clean and prepare lines
-    lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
-    
-    # ========== 1. SMART DATE PARSING ==========
-    def parse_smart_date(date_str):
-        """Convert any date format to YYYY-MM-DD"""
-        date_str = date_str.strip()
+    if job_id and message_body in ['yes', 'y', 'no', 'n']:
+        db = get_db()
+        is_approved = message_body in ['yes', 'y']
         
-        # Month name to number mapping
-        months = {
-            'january': 1, 'jan': 1, 'jan.': 1,
-            'february': 2, 'feb': 2, 'feb.': 2,
-            'march': 3, 'mar': 3, 'mar.': 3,
-            'april': 4, 'apr': 4, 'apr.': 4,
-            'may': 5,
-            'june': 6, 'jun': 6, 'jun.': 6,
-            'july': 7, 'jul': 7, 'jul.': 7,
-            'august': 8, 'aug': 8, 'aug.': 8,
-            'september': 9, 'sep': 9, 'sept': 9, 'sep.': 9,
-            'october': 10, 'oct': 10, 'oct.': 10,
-            'november': 11, 'nov': 11, 'nov.': 11,
-            'december': 12, 'dec': 12, 'dec.': 12
-        }
-        
-        # Try to parse named month format (e.g., "January 25, 2016" or "25 Jan 2016")
-        for month_name, month_num in months.items():
-            if month_name in date_str.lower():
-                # Pattern: Month Day, Year or Day Month Year
-                patterns = [
-                    rf'{month_name}\s+(\d{{1,2}})[,)]?\s+(\d{{4}})',  # Month Day, Year
-                    rf'(\d{{1,2}})\s+{month_name}\s+(\d{{4}})',        # Day Month Year
-                ]
-                for pattern in patterns:
-                    match = re.search(pattern, date_str, re.IGNORECASE)
-                    if match:
-                        if match.group(1).isdigit() and len(match.group(1)) <= 2:
-                            day = int(match.group(1))
-                            year = int(match.group(2))
-                            return f"{year}-{month_num:02d}-{day:02d}"
-        
-        # Try numeric formats
-        # DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
-        match = re.search(r'(\d{1,2})[/\-\.](\d{1,2})[/\-\.](\d{2,4})', date_str)
-        if match:
-            day, month, year = match.groups()
-            year = int(year)
-            if year < 100:
-                year = 2000 + year
-            day = int(day)
-            month = int(month)
-            # If day > 12, assume format is DD/MM/YYYY
-            if day > 12:
-                return f"{year}-{month:02d}-{day:02d}"
-            else:
-                # Assume MM/DD/YYYY (common in US) or DD/MM/YYYY?
-                # Let's check if month > 12, then it must be DD/MM/YYYY
-                if month > 12:
-                    return f"{year}-{day:02d}-{month:02d}"
-                else:
-                    # Default to DD/MM/YYYY for Indian invoices
-                    return f"{year}-{month:02d}-{day:02d}"
-        
-        # YYYY-MM-DD format
-        match = re.search(r'(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})', date_str)
-        if match:
-            year, month, day = match.groups()
-            return f"{year}-{int(month):02d}-{int(day):02d}"
-        
-        return date_str
-    
-    # ========== 2. FIND ALL DATES IN DOCUMENT ==========
-    dates_found = []
-    for line in lines:
-        # Look for date patterns
-        if re.search(r'\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}', line) or \
-           re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},?\s+\d{4}', line.lower()):
-            dates_found.append(line)
-    
-    # Extract dates (first is invoice date, second might be due date)
-    if dates_found:
-        date_matches = re.findall(r'(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}|\w+\s+\d{1,2},?\s+\d{4})', dates_found[0], re.IGNORECASE)
-        if date_matches:
-            data['date'] = parse_smart_date(date_matches[0])
-            print(f"✓ Invoice Date: {data['date']}")
-        
-        if len(dates_found) > 1:
-            date_matches2 = re.findall(r'(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}|\w+\s+\d{1,2},?\s+\d{4})', dates_found[1], re.IGNORECASE)
-            if date_matches2:
-                data['due_date'] = parse_smart_date(date_matches2[0])
-                print(f"✓ Due Date: {data['due_date']}")
-    
-    # ========== 3. EXTRACT INVOICE NUMBER (Anywhere in document) ==========
-    invoice_patterns = [
-        r'(?:Invoice|Order|Bill)\s*(?:Number|No|#)?\s*[:.\-]?\s*([A-Z0-9\-/]+)',
-        r'(?:INV|INV-|INV#)\s*[:.\-]?\s*([A-Z0-9\-/]+)',
-        r'([A-Z0-9]{2,}[\/\-][0-9]{4,})',  # Pattern like ORD-2024-001
-        r'(\d{4,}[\/\-][A-Z0-9]+)',         # Pattern like 2024-ORD001
-    ]
-    
-    for pattern in invoice_patterns:
-        match = re.search(pattern, extracted_text, re.IGNORECASE)
-        if match:
-            data['invoice_number'] = match.group(1).strip()
-            print(f"✓ Invoice Number: {data['invoice_number']}")
-            break
-    
-    # ========== 4. EXTRACT SUPPLIER NAME ==========
-    # Look for "From", "Supplier", "Vendor", "Seller" sections
-    for i, line in enumerate(lines):
-        line_lower = line.lower()
-        if any(keyword in line_lower for keyword in ['from:', 'supplier:', 'vendor:', 'seller:', 'bill from:']):
-            # Get the next few lines for the supplier name
-            for j in range(i + 1, min(i + 5, len(lines))):
-                candidate = lines[j]
-                # Skip if it looks like address lines (contains numbers or common address words)
-                if not re.search(r'\d{5,}', candidate) and not any(x in candidate.lower() for x in ['street', 'road', 'lane', 'avenue']):
-                    if len(candidate) > 3 and len(candidate) < 100:
-                        data['supplier_name'] = candidate
-                        print(f"✓ Supplier: {data['supplier_name']}")
-                        break
-            if data['supplier_name']:
-                break
-    
-    # If not found, try to find company name in first few lines
-    if not data['supplier_name']:
-        for line in lines[:10]:
-            if len(line) > 5 and len(line) < 50 and not re.search(r'\d', line):
-                data['supplier_name'] = line
-                print(f"✓ Supplier (fallback): {data['supplier_name']}")
-                break
-    
-    # ========== 5. EXTRACT PAYMENT TERMS ==========
-    payment_keywords = ['payment due', 'terms', 'net \d+', 'due within', 'payment terms']
-    payment_pattern = '|'.join(payment_keywords)
-    for line in lines:
-        if re.search(payment_pattern, line.lower()):
-            data['payment_terms'] = line
-            print(f"✓ Payment Terms: {data['payment_terms'][:50]}")
-            break
-    
-    # ========== 6. SMART TABLE DETECTION ==========
-    # First, identify where the items table might be
-    table_start = -1
-    column_mapping = {}
-    
-    # Common column headers and their mappings
-    header_mapping = {
-        'description': ['description', 'item', 'product', 'particulars', 'service', 'goods', 'name'],
-        'quantity': ['qty', 'quantity', 'qnty', 'quan', 'unit', 'pieces', 'pcs'],
-        'rate': ['rate', 'price', 'unit price', 'cost', 'selling price', '₹', 'rs'],
-        'amount': ['amount', 'total', 'value', 'subtotal', 'net'],
-        'tax': ['tax', 'gst', 'vat', 'cgst', 'sgst', 'igst'],
-        'discount': ['discount', 'disc', 'off']
-    }
-    
-    # Find table headers
-    for i, line in enumerate(lines):
-        line_lower = line.lower()
-        for col_type, keywords in header_mapping.items():
-            for keyword in keywords:
-                if keyword in line_lower and len(line) < 100:  # Header lines are usually short
-                    column_mapping[col_type] = i
-                    print(f"✓ Found column '{col_type}' at line {i}")
-                    
-        # If we found multiple headers, this is likely the table start
-        if len(column_mapping) >= 2:
-            table_start = i
-            break
-    
-    # Extract table data if we found headers
-    if table_start >= 0:
-        print(f"✓ Table detected starting at line {table_start}")
-        
-        # Get the header line to understand column positions
-        header_line = lines[table_start]
-        print(f"  Header: {header_line}")
-        
-        # Find column positions by splitting on whitespace
-        header_parts = re.split(r'\s{2,}', header_line)  # Split on multiple spaces
-        
-        # Now look at rows below the header
-        for i in range(table_start + 1, min(table_start + 30, len(lines))):
-            row = lines[i]
+        if is_approved:
+            db.execute("""
+                UPDATE jobs SET status='estimate_approved', estimate_approved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Customer Approved Estimate via WhatsApp', None, 'Customer replied YES')
             
-            # Skip if row looks like total line
-            if any(keyword in row.lower() for keyword in ['total', 'sub total', 'grand total', 'tax', 'payment']):
-                break
+            # Move to sent_for_repair automatically
+            db.execute("""
+                UPDATE jobs SET status='sent_for_repair', updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Status → sent_for_repair after customer approval', None)
             
-            # Extract numbers from the row
-            numbers = re.findall(r'(\d+(?:\.\d+)?)', row)
+            # Send confirmation to customer
+            job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            send_estimate_approved_confirmation(dict(job))
             
-            # Clean the description (remove numbers and special chars)
-            description = re.sub(r'\d+(?:\.\d+)?', '', row)
-            description = re.sub(r'[^\w\s\-\.]', '', description).strip()
+            # Notify extra numbers that repair has started
+            _send_repair_started_extra_notification(dict(job))
             
-            # Try to map columns based on position
-            if description and len(description) > 2:
-                item = {
-                    "description": description[:80],
-                    "quantity": 1,
-                    "rate": 0,
-                    "amount": 0,
-                    "tax": 0,
-                    "discount": 0
-                }
-                
-                # Map numbers to fields based on what columns we found
-                if 'quantity' in column_mapping and len(numbers) > 0:
-                    item['quantity'] = float(numbers[0]) if numbers else 1
-                    numbers = numbers[1:] if len(numbers) > 1 else []
-                
-                if 'rate' in column_mapping and len(numbers) > 0:
-                    item['rate'] = float(numbers[0]) if numbers else 0
-                    numbers = numbers[1:] if len(numbers) > 1 else []
-                
-                if 'amount' in column_mapping and len(numbers) > 0:
-                    item['amount'] = float(numbers[0]) if numbers else 0
-                elif len(numbers) > 0:
-                    # If no amount column, last number is likely amount
-                    item['amount'] = float(numbers[-1]) if numbers else 0
-                    if item['rate'] == 0 and item['amount'] > 0:
-                        item['rate'] = item['amount'] / item['quantity'] if item['quantity'] > 0 else item['amount']
-                
-                if 'tax' in column_mapping and len(numbers) > 0:
-                    item['tax'] = float(numbers[0]) if numbers else 0
-                
-                # Only add if amount > 0
-                if item['amount'] > 0 and description:
-                    data['items'].append(item)
-                    print(f"  Item: {description[:30]} | Qty: {item['quantity']} | Rate: ₹{item['rate']:.2f} | Amount: ₹{item['amount']:.2f}")
-    
-    # ========== 7. FALLBACK: Extract items if table detection failed ==========
-    if not data['items']:
-        print("✓ Using fallback item extraction")
-        for line in lines:
-            # Skip short lines and lines with common non-item words
-            if len(line) < 10:
-                continue
-            if any(skip in line.lower() for skip in ['total', 'tax', 'invoice', 'date', 'from:', 'to:', 'payment', 'subtotal']):
-                continue
+            # Notify admins and technician
+            tech_id = get_assigned_tech_id(db, job_id)
+            if tech_id:
+                send_notification(db, tech_id, job_id, f"✅ Customer APPROVED estimate for job {job_id}. Please proceed with repair.")
+            notify_all_admins(db, job_id, f"✅ Customer APPROVED estimate for job {job_id}")
             
-            # Find numbers in the line
-            numbers = re.findall(r'(\d+(?:\.\d+)?)', line)
+        else:  # rejected
+            db.execute("""
+                UPDATE jobs SET status='estimate_rejected', updated_at=CURRENT_TIMESTAMP
+                WHERE job_id=?
+            """, (job_id,))
+            log_action(db, job_id, 'Customer Rejected Estimate via WhatsApp', None, 'Customer replied NO')
             
-            if numbers:
-                # Clean description
-                description = re.sub(r'\d+(?:\.\d+)?', '', line)
-                description = re.sub(r'[^\w\s\-\.]', '', description).strip()
-                
-                if description and len(description) > 3:
-                    amount = float(numbers[-1]) if numbers else 0
-                    if amount > 0:
-                        item = {
-                            "description": description[:60],
-                            "quantity": float(numbers[0]) if len(numbers) >= 2 else 1,
-                            "rate": float(numbers[1]) if len(numbers) >= 3 else amount,
-                            "amount": amount
-                        }
-                        
-                        # Adjust if rate seems wrong
-                        if item['rate'] > item['amount'] and item['quantity'] > 1:
-                            item['rate'] = item['amount'] / item['quantity']
-                        
-                        data['items'].append(item)
-                        print(f"  Item: {description[:30]} | Qty: {item['quantity']} | Rate: ₹{item['rate']:.2f} | Amount: ₹{item['amount']:.2f}")
+            # Send confirmation to customer
+            job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            send_estimate_rejected_confirmation(dict(job))
+            
+            # Notify admins
+            notify_all_admins(db, job_id, f"❌ Customer REJECTED estimate for job {job_id}. Please arrange return.")
+        
+        db.commit()
+        return jsonify({'status': 'success', 'message': f'Processed {message_body} for job {job_id}'}), 200
     
-    # ========== 8. EXTRACT AMOUNTS (Total, Tax, Subtotal) ==========
-    # Find total amount
-    total_patterns = [
-        r'(?:Total|Grand Total|Amount Due|Net Payable)\s*:?\s*[₹\$]?\s*([0-9,]+\.?\d*)',
-        r'TOTAL\s+[A-Z]?\s*[₹\$]?\s*([0-9,]+\.?\d*)',
-        r'[₹\$]\s*([0-9,]+\.?\d*)\s*(?:Total|Due)',
-    ]
-    
-    for pattern in total_patterns:
-        match = re.search(pattern, extracted_text, re.IGNORECASE)
-        if match:
-            data['grand_total'] = float(match.group(1).replace(',', ''))
-            print(f"✓ Grand Total: ₹{data['grand_total']}")
-            break
-    
-    # Find tax amount
-    tax_patterns = [
-        r'(?:Tax|GST|VAT|CGST|SGST|IGST)\s*:?\s*[₹\$]?\s*([0-9,]+\.?\d*)',
-        r'Total Tax\s*:?\s*[₹\$]?\s*([0-9,]+\.?\d*)',
-    ]
-    
-    for pattern in tax_patterns:
-        match = re.search(pattern, extracted_text, re.IGNORECASE)
-        if match:
-            data['tax_amount'] = float(match.group(1).replace(',', ''))
-            print(f"✓ Tax Amount: ₹{data['tax_amount']}")
-            break
-    
-    # Find subtotal
-    subtotal_patterns = [
-        r'(?:Sub Total|Subtotal|Taxable Value)\s*:?\s*[₹\$]?\s*([0-9,]+\.?\d*)',
-    ]
-    
-    for pattern in subtotal_patterns:
-        match = re.search(pattern, extracted_text, re.IGNORECASE)
-        if match:
-            data['subtotal'] = float(match.group(1).replace(',', ''))
-            print(f"✓ Subtotal: ₹{data['subtotal']}")
-            break
-    
-    # Calculate missing values
-    if data['grand_total'] > 0 and data['subtotal'] == 0:
-        if data['tax_amount'] > 0:
-            data['subtotal'] = data['grand_total'] - data['tax_amount']
-        else:
-            # Assume 18% GST if not specified
-            data['subtotal'] = data['grand_total'] / 1.18
-            data['tax_amount'] = data['grand_total'] - data['subtotal']
-            print(f"✓ Estimated 18% GST: Subtotal ₹{data['subtotal']:.2f}, Tax ₹{data['tax_amount']:.2f}")
-    
-    # Calculate from items if totals missing
-    if data['grand_total'] == 0 and data['items']:
-        data['grand_total'] = sum(item['amount'] for item in data['items'])
-        print(f"✓ Calculated total from items: ₹{data['grand_total']}")
-    
-    # ========== 9. FINAL SUMMARY ==========
-    print("\n" + "="*50)
-    print("PARSING SUMMARY")
-    print("="*50)
-    print(f"📄 Invoice Number: {data['invoice_number'] or 'Not found'}")
-    print(f"📅 Date: {data['date'] or 'Not found'}")
-    print(f"📅 Due Date: {data['due_date'] or 'Not found'}")
-    print(f"🏢 Supplier: {data['supplier_name'] or 'Not found'}")
-    print(f"💳 Payment Terms: {data['payment_terms'] or 'Not found'}")
-    print(f"📦 Items Found: {len(data['items'])}")
-    print(f"💰 Subtotal: ₹{data['subtotal']:.2f}" if data['subtotal'] else "💰 Subtotal: Not found")
-    print(f"🧾 Tax: ₹{data['tax_amount']:.2f}" if data['tax_amount'] else "🧾 Tax: Not found")
-    print(f"💵 Total: ₹{data['grand_total']:.2f}" if data['grand_total'] else "💵 Total: Not found")
-    print("="*50 + "\n")
-    
-    return data
+    return jsonify({'status': 'ignored'}), 200
 
-# ── Seed Data ─────────────────────────────────────────────────────────────────
-SUBSCRIPTION_PLANS_DATA = {
-    "basic": {
-        "name": "Basic Plan",
-        "price": "999",
-        "max_companies": "2",
-        "max_users": "5",
-        "features": "Basic Analytics,Order Management,Client Management,Email Support",
-    },
-    "premium": {
-        "name": "Premium Plan",
-        "price": "2499",
-        "max_companies": "5",
-        "max_users": "15",
-        "features": "Advanced Analytics,Inventory Management,Invoice & Estimates,Priority Support,API Access",
-    },
-    "gold": {
-        "name": "Gold Plan",
-        "price": "4999",
-        "max_companies": "10",
-        "max_users": "35",
-        "features": "All Premium Features,Custom Reports,Dedicated Account Manager,24/7 Support,White-label Option",
-    },
-    "custom": {
-        "name": "Custom Plan",
-        "price": "Contact Sales",
-        "max_companies": "Unlimited",
-        "max_users": "Unlimited",
-        "features": "Fully Customizable,On-premise Deployment,Training Included,Custom Development",
-    },
-}
-
-def seed_database():
-    """Insert initial plans, users and sample data if the DB is empty."""
-
-    # ── Subscription Plans
-    if SubscriptionPlan.query.count() == 0:
-        for plan_id, data in SUBSCRIPTION_PLANS_DATA.items():
-            db.session.add(SubscriptionPlan(
-                id=plan_id,
-                name=data["name"],
-                price=data["price"],
-                max_companies=data["max_companies"],
-                max_users=data["max_users"],
-                features=data["features"],
-            ))
-        db.session.commit()
-        print("✔  Subscription plans seeded.")
-
-    # ── Registered Users
-    if RegisteredUser.query.count() == 0:
-        admin = RegisteredUser(
-            user_id="USR001",
-            email="admin@nexa.com",
-            password_hash=hash_password("Admin@123"),
-            full_name="System Admin",
-            phone="9999999999",
-            role="super_admin",
-            subscription_plan=None,
-            created_at=date(2024, 1, 1),
-            is_active=True,
-        )
-        rahul = RegisteredUser(
-            user_id="USR002",
-            email="rahul@techsolutions.com",
-            password_hash=hash_password("Tech@123"),
-            full_name="Rahul Sharma",
-            phone="9876543210",
-            role="owner",
-            subscription_plan="premium",
-            created_at=date(2024, 1, 1),
-            is_active=True,
-        )
-        priya_reg = RegisteredUser(
-            user_id="USR003",
-            email="priya@globaltraders.com",
-            password_hash=hash_password("Global@123"),
-            full_name="Priya Singh",
-            phone="9876543211",
-            role="owner",
-            subscription_plan="basic",
-            created_at=date(2024, 1, 15),
-            is_active=True,
-        )
-        db.session.add_all([admin, rahul, priya_reg])
-        db.session.commit()
-        print("✔  Registered users seeded.")
-
-    # ── Companies
-    if Company.query.count() == 0:
-        comp1 = Company(
-            company_id="COMP001",
-            company_name="Tech Solutions India",
-            owner_email="rahul@techsolutions.com",
-            subscription_plan="premium",
-            subscription_start=date(2024, 1, 1),
-            subscription_end=date(2025, 1, 1),
-            max_companies_allowed="5",
-            max_users_per_company="15",
-            gst_number="27AAABC1234F1Z",
-            address="Mumbai, Maharashtra",
-            phone="9876543210",
-            created_at=date(2024, 1, 1),
-            is_active=True,
-        )
-        comp2 = Company(
-            company_id="COMP002",
-            company_name="Global Traders Ltd",
-            owner_email="priya@globaltraders.com",
-            subscription_plan="basic",
-            subscription_start=date(2024, 1, 15),
-            subscription_end=date(2024, 7, 15),
-            max_companies_allowed="2",
-            max_users_per_company="5",
-            gst_number="29AABCB5678F1Z",
-            address="Delhi, India",
-            phone="9876543211",
-            created_at=date(2024, 1, 15),
-            is_active=True,
-        )
-        comp3 = Company(
-            company_id="COMP003",
-            company_name="Rahul Exports Pvt Ltd",
-            owner_email="rahul@techsolutions.com",
-            subscription_plan="premium",
-            subscription_start=date(2024, 3, 1),
-            subscription_end=date(2025, 3, 1),
-            max_companies_allowed="5",
-            max_users_per_company="15",
-            gst_number="27AAABC9999F1Z",
-            address="Pune, Maharashtra",
-            phone="9876543299",
-            created_at=date(2024, 3, 1),
-            is_active=True,
-        )
-        db.session.add_all([comp1, comp2, comp3])
-        db.session.commit()
-        print("✔  Companies seeded.")
-
-    # ── Company Users
-    if CompanyUser.query.count() == 0:
-        users = [
-            CompanyUser(user_id="EMP001", company_id="COMP001", email="rahul@techsolutions.com",
-                        password_hash=hash_password("Tech@123"), full_name="Rahul Sharma",
-                        role="owner", department="Management", phone="9876543201",
-                        is_active=True, created_at=date(2024, 1, 1)),
-            CompanyUser(user_id="EMP002", company_id="COMP001", email="priya.mehta@techsolutions.com",
-                        password_hash=hash_password("Priya@123"), full_name="Priya Mehta",
-                        role="sales_manager", department="Sales", phone="9876543202",
-                        is_active=True, created_at=date(2024, 1, 1)),
-            CompanyUser(user_id="EMP003", company_id="COMP001", email="arjun.nair@techsolutions.com",
-                        password_hash=hash_password("Arjun@123"), full_name="Arjun Nair",
-                        role="accountant", department="Accounts", phone="9876543203",
-                        is_active=True, created_at=date(2024, 1, 2)),
-            CompanyUser(user_id="EMP101", company_id="COMP002", email="priya@globaltraders.com",
-                        password_hash=hash_password("Global@123"), full_name="Priya Singh",
-                        role="owner", department="Management", phone="9876543211",
-                        is_active=True, created_at=date(2024, 1, 15)),
-            CompanyUser(user_id="EMP102", company_id="COMP002", email="amit@globaltraders.com",
-                        password_hash=hash_password("Amit@123"), full_name="Amit Kumar",
-                        role="sales_executive", department="Sales", phone="9876543212",
-                        is_active=True, created_at=date(2024, 1, 15)),
-            CompanyUser(user_id="EMP201", company_id="COMP003", email="rahul@techsolutions.com",
-                        password_hash=hash_password("Tech@123"), full_name="Rahul Sharma",
-                        role="owner", department="Management", phone="9876543299",
-                        is_active=True, created_at=date(2024, 3, 1)),
-        ]
-        db.session.add_all(users)
-        db.session.commit()
-        print("✔  Company users seeded.")
-
-    # ── Sample Clients
-    if Client.query.count() == 0:
-        clients = [
-            Client(company_id="COMP001", name="Reliance Industries", phone="9876543210",
-                   pending=0, last_payment=date(2024, 1, 22), status="Paid"),
-            Client(company_id="COMP001", name="Tata Consultancy", phone="9876543211",
-                   pending=89500, last_payment=date(2024, 1, 5), status="Pending"),
-            Client(company_id="COMP001", name="Infosys Ltd", phone="9876543212",
-                   pending=86000, last_payment=date(2024, 1, 18), status="Active"),
-            Client(company_id="COMP002", name="HDFC Bank", phone="9876543217",
-                   pending=156000, last_payment=date(2024, 1, 1), status="Pending"),
-            Client(company_id="COMP002", name="ICICI Bank", phone="9876543218",
-                   pending=0, last_payment=date(2024, 1, 21), status="Paid"),
-        ]
-        db.session.add_all(clients)
-        db.session.commit()
-        print("✔  Clients seeded.")
-
-    # ── Sample Stock Items (COMP001)
-    if StockItem.query.count() == 0:
-        items = [
-            StockItem(company_id="COMP001", code="PROD001", name="LED TV 43 inch",
-                      category="Electronics", quantity=25, unit="pcs", unit_price=35000,
-                      reorder_level=10, last_updated=date(2024, 1, 20)),
-            StockItem(company_id="COMP001", code="PROD002", name="Smartphone X",
-                      category="Electronics", quantity=50, unit="pcs", unit_price=25000,
-                      reorder_level=20, last_updated=date(2024, 1, 20)),
-        ]
-        db.session.add_all(items)
-        db.session.commit()
-        print("✔  Stock items seeded.")
-
-    # ── Sample Orders (COMP001)
-    if Order.query.count() == 0:
-        c1 = Client.query.filter_by(company_id="COMP001", name="Reliance Industries").first()
-        c2 = Client.query.filter_by(company_id="COMP001", name="Tata Consultancy").first()
-        c3 = Client.query.filter_by(company_id="COMP001", name="Infosys Ltd").first()
-        hd = Client.query.filter_by(company_id="COMP002", name="HDFC Bank").first()
-        ic = Client.query.filter_by(company_id="COMP002", name="ICICI Bank").first()
-
-        orders = [
-            Order(order_id="ORD-2024-001", company_id="COMP001",
-                  client_id=c1.id if c1 else None, employee_id="EMP001",
-                  date=date(2024, 1, 15), amount=245000, received=245000, status="Delivered"),
-            Order(order_id="ORD-2024-002", company_id="COMP001",
-                  client_id=c2.id if c2 else None, employee_id="EMP002",
-                  date=date(2024, 1, 17), amount=89500, received=0, status="Pending"),
-            Order(order_id="ORD-2024-003", company_id="COMP001",
-                  client_id=c3.id if c3 else None, employee_id="EMP001",
-                  date=date(2024, 1, 18), amount=172000, received=86000, status="Processing"),
-            Order(order_id="ORD-2024-101", company_id="COMP002",
-                  client_id=hd.id if hd else None, employee_id="EMP101",
-                  date=date(2024, 1, 20), amount=156000, received=0, status="Pending"),
-            Order(order_id="ORD-2024-102", company_id="COMP002",
-                  client_id=ic.id if ic else None, employee_id="EMP102",
-                  date=date(2024, 1, 21), amount=89000, received=89000, status="Delivered"),
-        ]
-        db.session.add_all(orders)
-        db.session.commit()
-        print("✔  Orders seeded.")
-
-    print("✅ Database seeding complete.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Plan helper (replaces the old SUBSCRIPTION_PLANS dict) ───────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-def get_plan(plan_id):
-    p = SubscriptionPlan.query.get(plan_id)
-    if not p:
-        return {}
-    return {
-        "name": p.name,
-        "price": p.price,
-        "max_companies": p.max_companies,
-        "max_users_per_company": p.max_users,
-        "features": p.features.split(",") if p.features else [],
-    }
-
-def get_all_plans():
-    return {p.id: get_plan(p.id) for p in SubscriptionPlan.query.all()}
-
-
-# ── Company helpers ───────────────────────────────────────────────────────────
-def get_company_by_id(company_id):
-    return Company.query.filter_by(company_id=company_id).first()
-
-def get_owner_companies(owner_email):
-    return Company.query.filter_by(owner_email=owner_email, is_active=True).all()
-
-def check_company_limit(company_id, user_type="user"):
-    company = get_company_by_id(company_id)
-    if not company:
-        return False, "Company not found"
-    plan = get_plan(company.subscription_plan)
-    if user_type == "user":
-        current = CompanyUser.query.filter_by(company_id=company_id, is_active=True).count()
-        max_u = plan.get("max_users_per_company", 5)
-        try:
-            max_u = int(max_u)
-            if current >= max_u:
-                return False, f"Maximum {max_u} users allowed in your {plan['name']}. Please upgrade."
-        except (ValueError, TypeError):
-            pass  # "Unlimited"
-    return True, "OK"
-
-def check_new_company_limit(owner_email):
-    comps = get_owner_companies(owner_email)
-    if not comps:
-        return True, "OK"
-    plan = get_plan(comps[0].subscription_plan)
-    max_c = plan.get("max_companies", 2)
-    try:
-        max_c = int(max_c)
-        if len(comps) >= max_c:
-            return False, f"Your {plan['name']} allows up to {max_c} companies. Please upgrade."
-    except (ValueError, TypeError):
-        pass  # "Unlimited"
-    return True, "OK"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Auth Routes ───────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/")
+# ─── ROUTES ───────────────────────────────────────────────────────────────────
+@app.route('/')
 def index():
-    if "user" in session:
-        return redirect(url_for("dashboard"))
-    return redirect(url_for("login"))
+    if 'user_id' in session:
+        if session['role'] == 'admin':
+            return redirect(url_for('admin_dashboard'))
+        return redirect(url_for('tech_dashboard'))
+    return redirect(url_for('login'))
 
-
-@app.route("/login", methods=["GET", "POST"])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == "POST":
-        email    = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if user and check_password_hash(user['password'], password):
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            session['role'] = user['role']
+            session['name'] = user['name']
+            if user['role'] == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            return redirect(url_for('tech_dashboard'))
+        flash('Invalid credentials', 'error')
+    return render_template('shared/login.html')
 
-        # Super-admin / registered-user login
-        reg_user = RegisteredUser.query.filter_by(email=email, is_active=True).first()
-        if reg_user and verify_password(password, reg_user.password_hash):
-            if reg_user.role == "super_admin":
-                session["user"] = {
-                    "user_id": reg_user.user_id, "email": reg_user.email,
-                    "full_name": reg_user.full_name, "role": "super_admin",
-                    "company_id": None,
-                }
-                return redirect(url_for("admin_dashboard"))
-
-            # Owner: may have multiple companies
-            companies = get_owner_companies(email)
-            if len(companies) == 1:
-                c = companies[0]
-                session["user"] = {
-                    "user_id": reg_user.user_id, "email": reg_user.email,
-                    "full_name": reg_user.full_name, "role": reg_user.role,
-                    "company_id": c.company_id,
-                }
-                session["active_company_id"] = c.company_id
-                return redirect(url_for("dashboard"))
-            elif len(companies) > 1:
-                session["pending_login_email"] = email
-                return redirect(url_for("select_company"))
-
-        # Company employee login
-        emp = CompanyUser.query.filter_by(email=email, is_active=True).first()
-        if emp and verify_password(password, emp.password_hash):
-            session["user"] = {
-                "user_id": emp.user_id, "email": emp.email,
-                "full_name": emp.full_name, "role": emp.role,
-                "company_id": emp.company_id,
-            }
-            session["active_company_id"] = emp.company_id
-            return redirect(url_for("dashboard"))
-
-        flash("Invalid email or password")
-    return render_template("login.html")
-
-
-@app.route("/select-company", methods=["GET", "POST"])
-def select_company():
-    owner_email = session.get("pending_login_email") or session.get("user", {}).get("email")
-    if not owner_email:
-        return redirect(url_for("login"))
-
-    if request.method == "POST":
-        company_id = request.form.get("company_id")
-        company = get_company_by_id(company_id)
-        if company and company.owner_email == owner_email:
-            reg_user = RegisteredUser.query.filter_by(email=owner_email).first()
-            session["user"] = {
-                "email":     reg_user.email,
-                "full_name": reg_user.full_name,
-                "role":      reg_user.role,
-                "user_id":   reg_user.user_id,
-            }
-            session["active_company_id"] = company_id
-            session.pop("pending_login_email", None)
-            return redirect(url_for("dashboard"))
-        flash("Invalid company selection.")
-
-    companies = get_owner_companies(owner_email)
-    user = get_current_user()
-    if not user:
-        reg_user = RegisteredUser.query.filter_by(email=owner_email).first()
-        user = {"full_name": reg_user.full_name, "email": reg_user.email} if reg_user else {"full_name": owner_email, "email": owner_email}
-    return render_template("select_company.html", companies=companies, user=user)
-
-
-@app.route("/switch-company/<company_id>")
-@login_required
-def switch_company(company_id):
-    user = get_current_user()
-    company = get_company_by_id(company_id)
-    if company and company.owner_email == user.get("email"):
-        session["active_company_id"] = company_id
-        flash(f"Switched to {company.company_name}")
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if request.method == "POST":
-        email             = request.form.get("email", "").strip().lower()
-        password          = request.form.get("password", "")
-        confirm_password  = request.form.get("confirm_password", "")
-        full_name         = request.form.get("full_name", "")
-        phone             = request.form.get("phone", "")
-        company_name      = request.form.get("company_name", "")
-        subscription_plan = request.form.get("subscription_plan", "basic")
-
-        if RegisteredUser.query.filter_by(email=email).first():
-            flash("Email already registered"); return redirect(url_for("register"))
-        if password != confirm_password:
-            flash("Passwords do not match"); return redirect(url_for("register"))
-        if len(password) < 6:
-            flash("Password must be at least 6 characters"); return redirect(url_for("register"))
-
-        plan_obj = SubscriptionPlan.query.get(subscription_plan) or SubscriptionPlan.query.get("basic")
-        reg_count = RegisteredUser.query.count()
-        user_id   = f"USR{reg_count + 1:03d}"
-
-        new_user = RegisteredUser(
-            user_id=user_id, email=email, password_hash=hash_password(password),
-            full_name=full_name, phone=phone, role="owner",
-            subscription_plan=plan_obj.id, created_at=date.today(), is_active=True,
-        )
-        db.session.add(new_user)
-        db.session.flush()
-
-        comp_count  = Company.query.count()
-        company_id  = f"COMP{comp_count + 1:03d}"
-        end_days    = 730 if plan_obj.id == "custom" else 365
-        new_company = Company(
-            company_id=company_id, company_name=company_name,
-            owner_email=email, subscription_plan=plan_obj.id,
-            subscription_start=date.today(),
-            subscription_end=date.today() + timedelta(days=end_days),
-            max_companies_allowed=plan_obj.max_companies,
-            max_users_per_company=plan_obj.max_users,
-            gst_number=request.form.get("gst_number", ""),
-            address=request.form.get("address", ""),
-            phone=phone, created_at=date.today(), is_active=True,
-        )
-        db.session.add(new_company)
-        db.session.flush()
-
-        emp_count = CompanyUser.query.count()
-        emp_id    = f"EMP{emp_count + 1:03d}"
-        new_emp   = CompanyUser(
-            user_id=emp_id, company_id=company_id, email=email,
-            password_hash=hash_password(password), full_name=full_name,
-            role="owner", department="Management", phone=phone,
-            is_active=True, created_at=date.today(),
-        )
-        db.session.add(new_emp)
-        db.session.commit()
-
-        flash("Registration successful! Please login.")
-        return redirect(url_for("login"))
-
-    return render_template("register.html", plans=get_all_plans())
-
-
-@app.route("/logout")
+@app.route('/logout')
 def logout():
     session.clear()
-    return redirect(url_for("login"))
+    return redirect(url_for('login'))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Dashboard ─────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/dashboard")
+# ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
+@app.route('/notifications')
 @login_required
-def dashboard():
-    company_id = get_current_company()
-    company    = get_company_by_id(company_id)
+def notifications():
+    db = get_db()
+    user_id = session['user_id']
+    notifs = db.execute(
+        "SELECT * FROM notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 50",
+        (user_id,)
+    ).fetchall()
+    db.execute("UPDATE notifications SET is_read=1 WHERE recipient_id=?", (user_id,))
+    db.commit()
+    return render_template('shared/notifications.html', notifications=notifs)
 
-    orders    = Order.query.filter_by(company_id=company_id).all()
-    clients   = Client.query.filter_by(company_id=company_id).all()
-    employees = CompanyUser.query.filter_by(company_id=company_id, is_active=True).all()
-    invoices  = Invoice.query.filter_by(company_id=company_id).all()
-    purchases = PurchaseInvoice.query.filter_by(company_id=company_id).all()
-    stock     = StockItem.query.filter_by(company_id=company_id).all()
-
-    total_revenue   = sum(o.amount    for o in orders)
-    total_received  = sum(o.received  for o in orders)
-    pending_orders  = [o for o in orders if o.status == "Pending"]
-
-    # Invoice billing totals
-    total_billing   = sum(i.grand_total  for i in invoices)
-    total_inv_paid  = sum((i.grand_total - getattr(i, "balance", 0)) for i in invoices)
-    total_inv_due   = sum(getattr(i, "balance", 0) for i in invoices)
-
-    # Purchase totals
-    total_purchases = sum(p.grand_total  for p in purchases)
-    total_pur_paid  = sum(p.paid_amount  for p in purchases)
-    total_pur_due   = sum(p.balance      for p in purchases)
-
-    # Stock
-    low_stock       = [s for s in stock if s.quantity <= s.reorder_level]
-    total_stock_val = sum((s.purchase_rate or 0) * s.quantity for s in stock)
-
-    stats = {
-        # Orders
-        "total_orders":    len(orders),
-        "total_revenue":   total_revenue,
-        "total_received":  total_received,
-        "pending_amount":  total_revenue - total_received,
-        "pending_orders":  len(pending_orders),
-        # Clients / Employees
-        "total_clients":   len(clients),
-        "total_employees": len(employees),
-        # Invoices / Billing
-        "total_billing":   total_billing,
-        "total_inv_paid":  total_inv_paid,
-        "total_inv_due":   total_inv_due,
-        "total_invoices":  len(invoices),
-        # Purchases
-        "total_purchases": total_purchases,
-        "total_pur_paid":  total_pur_paid,
-        "total_pur_due":   total_pur_due,
-        "total_purchase_count": len(purchases),
-        # Stock
-        "total_stock_items": len(stock),
-        "low_stock_count":   len(low_stock),
-        "total_stock_value": total_stock_val,
-        # Estimates
-        "total_estimates": Estimate.query.filter_by(company_id=company_id).count(),
-    }
-
-    recent_orders   = sorted(orders,  key=lambda o: o.date,    reverse=True)[:5]
-    recent_invoices = sorted(invoices, key=lambda i: i.date,   reverse=True)[:5]
-    recent_purchases= sorted(purchases, key=lambda p: p.date,  reverse=True)[:5]
-    top_clients     = sorted(clients,  key=lambda c: c.pending, reverse=True)[:5]
-
-    user_companies = []
-    user = get_current_user()
-    if user.get("role") == "owner":
-        user_companies = get_owner_companies(user.get("email"))
-
-    return render_template("dashboard.html",
-                           company=company,
-                           stats=stats,
-                           recent_orders=recent_orders,
-                           recent_invoices=recent_invoices,
-                           recent_purchases=recent_purchases,
-                           top_clients=top_clients,
-                           low_stock=low_stock,
-                           user_companies=user_companies,
-                           user=user)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Orders ────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/orders")
+@app.route('/notifications/mark_read_all', methods=['POST'])
 @login_required
-def order_list():
-    company_id    = get_current_company()
-    filter_status = request.args.get("status", "All")
-    query         = Order.query.filter_by(company_id=company_id)
-    if filter_status != "All":
-        query = query.filter_by(status=filter_status)
-    orders  = query.order_by(Order.date.desc()).all()
-    clients = Client.query.filter_by(company_id=company_id).all()
-    return render_template("orders.html", orders=orders, clients=clients,
-                           current_status=filter_status)
+def mark_all_notifications_read():
+    db = get_db()
+    db.execute("UPDATE notifications SET is_read=1 WHERE recipient_id=?", (session['user_id'],))
+    db.commit()
+    return jsonify({'ok': True})
 
-
-@app.route("/orders/add", methods=["GET", "POST"])
+@app.route('/notifications/mark_read', methods=['POST'])
 @login_required
-def order_add():
-    company_id = get_current_company()
-    clients    = Client.query.filter_by(company_id=company_id).all()
+def mark_notification_read():
+    notif_id = request.form.get('notif_id')
+    db = get_db()
+    db.execute(
+        "UPDATE notifications SET is_read=1 WHERE id=? AND recipient_id=?",
+        (notif_id, session['user_id'])
+    )
+    db.commit()
+    return jsonify({'ok': True})
 
-    if request.method == "POST":
-        client_id   = request.form.get("client_id")
-        amount      = float(request.form.get("amount", 0))
-        received    = float(request.form.get("received", 0))
-        status      = request.form.get("status", "Pending")
-        order_date  = request.form.get("order_date") or str(date.today())
-        ord_count   = Order.query.count()
-        new_order   = Order(
-            order_id=f"ORD-{datetime.now().strftime('%Y%m%d')}-{ord_count+1:03d}",
-            company_id=company_id,
-            client_id=int(client_id) if client_id else None,
-            employee_id=get_current_user().get("user_id"),
-            date=date.fromisoformat(order_date),
-            amount=amount, received=received, status=status,
-        )
-        db.session.add(new_order)
-        db.session.commit()
-        flash("Order created successfully!")
-        return redirect(url_for("order_list"))
-
-    return render_template("order_form.html", clients=clients)
-
-
-@app.route("/orders/edit/<int:order_pk>", methods=["GET", "POST"])
+@app.route('/api/notifications/unread_count')
 @login_required
-def order_edit(order_pk):
-    company_id = get_current_company()
-    order      = Order.query.filter_by(id=order_pk, company_id=company_id).first_or_404()
-    clients    = Client.query.filter_by(company_id=company_id).all()
+def api_unread_count():
+    db = get_db()
+    row = db.execute(
+        "SELECT COUNT(*) FROM notifications WHERE recipient_id=? AND is_read=0",
+        (session['user_id'],)
+    ).fetchone()
+    return jsonify({'count': row[0] if row else 0})
 
-    if request.method == "POST":
-        order.client_id = int(request.form.get("client_id")) if request.form.get("client_id") else None
-        order.amount    = float(request.form.get("amount", 0))
-        order.received  = float(request.form.get("received", 0))
-        order.status    = request.form.get("status", "Pending")
-        db.session.commit()
-        flash("Order updated!")
-        return redirect(url_for("order_list"))
-
-    return render_template("order_form.html", order=order, clients=clients)
-
-
-@app.route("/orders/delete/<int:order_pk>", methods=["POST"])
+@app.route('/api/notifications/poll')
 @login_required
-def order_delete(order_pk):
-    company_id = get_current_company()
-    order      = Order.query.filter_by(id=order_pk, company_id=company_id).first_or_404()
-    db.session.delete(order)
-    db.session.commit()
-    flash("Order deleted.")
-    return redirect(url_for("order_list"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Clients ───────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _normalize_client(c):
-    """Return a dict whose keys match what clients.html / client_form.html expect."""
-    return {
-        # identity
-        "id":              c.id,
-        "client_name":     c.name,
-        "client_type":     c.client_type     or "Business",
-        "contact_person":  c.contact_person  or "",
-        # contact
-        "phone":           c.phone           or "",
-        "alternate_phone": c.alternate_phone or "",
-        "email":           c.email           or "",
-        "website":         c.website         or "",
-        # address
-        "address_line1":   c.address_line1   or "",
-        "address_line2":   c.address_line2   or "",
-        "city":            c.city            or "",
-        "state":           c.state           or "",
-        "pincode":         c.pincode         or "",
-        "country":         c.country         or "India",
-        # GST & tax
-        "gst_number":      c.gst_number      or "",
-        "pan_number":      c.pan_number      or "",
-        "gst_type":        c.gst_type        or "Regular",
-        # financial
-        "credit_limit":    c.credit_limit    or 0.0,
-        "credit_days":     c.credit_days     or 30,
-        "outstanding":     c.pending         or 0.0,
-        "opening_balance": c.opening_balance or 0.0,
-        "last_payment":    c.last_payment,
-        # status
-        "status":          c.status          or "Active",
-        "notes":           c.notes           or "",
-        "created_at":      c.created_at,
-    }
-
-
-@app.route("/clients")
-@login_required
-def client_list():
-    company_id    = get_current_company()
-    filter_status = request.args.get("status", "All")
-
-    query = Client.query.filter_by(company_id=company_id)
-    if filter_status != "All":
-        query = query.filter_by(status=filter_status)
-
-    clients = [_normalize_client(c) for c in query.all()]
-    return render_template("clients.html", clients=clients, current_status=filter_status)
-
-
-# /clients/new  ── template links here for new client
-@app.route("/clients/new", methods=["GET", "POST"])
-@login_required
-def client_new():
-    company_id = get_current_company()
-    if request.method == "POST":
-        f = request.form
-
-        # GST uniqueness check (per company)
-        gst = f.get("gst_number", "").strip().upper()
-        if gst:
-            existing_gst = Client.query.filter_by(
-                company_id=company_id, gst_number=gst
-            ).first()
-            if existing_gst:
-                flash(f"GST number {gst} is already registered to client '{existing_gst.name}'. Please check and try again.", "error")
-                return render_template("client_form.html", form_data=f)
-
-        new_client = Client(
-            company_id      = company_id,
-            name            = f.get("client_name", "").strip(),
-            client_type     = f.get("client_type", "Business"),
-            contact_person  = f.get("contact_person", "").strip(),
-            phone           = f.get("phone", "").strip(),
-            alternate_phone = f.get("alternate_phone", "").strip(),
-            email           = f.get("email", "").strip().lower(),
-            website         = f.get("website", "").strip(),
-            address_line1   = f.get("address_line1", "").strip(),
-            address_line2   = f.get("address_line2", "").strip(),
-            city            = f.get("city", "").strip(),
-            state           = f.get("state", "").strip(),
-            pincode         = f.get("pincode", "").strip(),
-            country         = f.get("country", "India").strip(),
-            gst_number      = gst or None,
-            pan_number      = f.get("pan_number", "").strip().upper() or None,
-            gst_type        = f.get("gst_type", "Regular"),
-            credit_limit    = float(f.get("credit_limit", 0) or 0),
-            credit_days     = int(f.get("credit_days", 30) or 30),
-            pending         = float(f.get("opening_balance", 0) or 0),
-            opening_balance = float(f.get("opening_balance", 0) or 0),
-            status          = f.get("status", "Active"),
-            notes           = f.get("notes", "").strip(),
-            created_at      = date.today(),
-        )
-        db.session.add(new_client)
-        db.session.commit()
-        flash(f"Client '{new_client.name}' added successfully!")
-        return redirect(url_for("client_list"))
-    return render_template("client_form.html", form_data={})
-
-
-# Keep /clients/add as an alias so old links still work
-@app.route("/clients/add", methods=["GET", "POST"])
-@login_required
-def client_add():
-    return client_new()
-
-
-# /clients/<id>  ── view detail (template links here with 👁️)
-@app.route("/clients/<int:client_pk>")
-@login_required
-def client_view(client_pk):
-    company_id = get_current_company()
-    c = Client.query.filter_by(id=client_pk, company_id=company_id).first_or_404()
-    client = _normalize_client(c)
-    invoices = Invoice.query.filter_by(company_id=company_id, client_id=c.id).order_by(Invoice.date.desc()).all()
-    orders   = Order.query.filter_by(company_id=company_id, client_id=c.id).order_by(Order.date.desc()).all()
-    return render_template("client_detail.html", client=client, invoices=invoices, orders=orders)
-
-
-# /clients/<id>/edit
-@app.route("/clients/<int:client_pk>/edit", methods=["GET", "POST"])
-@login_required
-def client_edit(client_pk):
-    company_id = get_current_company()
-    c          = Client.query.filter_by(id=client_pk, company_id=company_id).first_or_404()
-    if request.method == "POST":
-        f   = request.form
-        gst = f.get("gst_number", "").strip().upper()
-
-        # GST uniqueness: check no OTHER client has the same GST
-        if gst:
-            existing_gst = Client.query.filter(
-                Client.company_id == company_id,
-                Client.gst_number == gst,
-                Client.id != c.id
-            ).first()
-            if existing_gst:
-                flash(f"GST number {gst} is already registered to client '{existing_gst.name}'.", "error")
-                return render_template("client_form.html", client=_normalize_client(c), form_data=f)
-
-        c.name            = f.get("client_name", c.name).strip()
-        c.client_type     = f.get("client_type",     c.client_type)
-        c.contact_person  = f.get("contact_person",  c.contact_person or "").strip()
-        c.phone           = f.get("phone",            c.phone or "").strip()
-        c.alternate_phone = f.get("alternate_phone",  c.alternate_phone or "").strip()
-        c.email           = f.get("email",            c.email or "").strip().lower()
-        c.website         = f.get("website",          c.website or "").strip()
-        c.address_line1   = f.get("address_line1",    c.address_line1 or "").strip()
-        c.address_line2   = f.get("address_line2",    c.address_line2 or "").strip()
-        c.city            = f.get("city",             c.city or "").strip()
-        c.state           = f.get("state",            c.state or "").strip()
-        c.pincode         = f.get("pincode",          c.pincode or "").strip()
-        c.country         = f.get("country",          c.country or "India").strip()
-        c.gst_number      = gst or None
-        c.pan_number      = f.get("pan_number",  c.pan_number or "").strip().upper() or None
-        c.gst_type        = f.get("gst_type",    c.gst_type)
-        c.credit_limit    = float(f.get("credit_limit",    c.credit_limit    or 0) or 0)
-        c.credit_days     = int(f.get("credit_days",       c.credit_days     or 30) or 30)
-        c.opening_balance = float(f.get("opening_balance", c.opening_balance or 0) or 0)
-        c.status          = f.get("status", c.status)
-        c.notes           = f.get("notes",   c.notes or "").strip()
-        db.session.commit()
-        flash(f"Client '{c.name}' updated successfully!")
-        return redirect(url_for("client_list"))
-    return render_template("client_form.html", client=_normalize_client(c), form_data={})
-
-
-# /clients/<id>/delete  ── template uses GET link with confirm dialog
-@app.route("/clients/<int:client_pk>/delete", methods=["GET", "POST"])
-@login_required
-def client_delete(client_pk):
-    company_id = get_current_company()
-    c          = Client.query.filter_by(id=client_pk, company_id=company_id).first_or_404()
-    db.session.delete(c)
-    db.session.commit()
-    flash("Client deleted.")
-    return redirect(url_for("client_list"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Stock / Inventory ─────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/inventory")
-@login_required
-def inventory_list():
-    company_id  = get_current_company()
-    stock_items = StockItem.query.filter_by(company_id=company_id).all()
-
-    total_items = len(stock_items)
-    in_stock    = sum(1 for i in stock_items if i.quantity > (i.reorder_level or 0))
-    low_stock   = sum(1 for i in stock_items if 0 < i.quantity <= (i.reorder_level or 10))
-    out_stock   = sum(1 for i in stock_items if i.quantity <= 0)
-
-    stock_summary = {
-        "total_items": total_items,
-        "in_stock":    in_stock,
-        "low_stock":   low_stock,
-        "out_stock":   out_stock,
-    }
-
-    return render_template("inventory.html",
-                           stock_items=stock_items,
-                           stock_summary=stock_summary)
-
-
-# ── Stock JSON API (used by inventory.html JS modals) ────────────────────────
-@app.route("/stock/item/<code>")
-@login_required
-def stock_item_get(code):
-    company_id = get_current_company()
-    item = StockItem.query.filter_by(company_id=company_id, code=code.upper()).first_or_404()
+def api_notifications_poll():
+    db = get_db()
+    user_id = session['user_id']
+    notifs = db.execute(
+        "SELECT * FROM notifications WHERE recipient_id=? ORDER BY created_at DESC LIMIT 50",
+        (user_id,)
+    ).fetchall()
+    unread = db.execute(
+        "SELECT COUNT(*) FROM notifications WHERE recipient_id=? AND is_read=0",
+        (user_id,)
+    ).fetchone()[0]
     return jsonify({
-        "code":          item.code,
-        "name":          item.name,
-        "category":      item.category or "",
-        "quantity":      item.quantity,
-        "unit":          item.unit or "pcs",
-        "unit_price":    item.unit_price,
-        "reorder_level": item.reorder_level or 10,
-        "hsn":           item.hsn or "",
+        'unread_count': unread,
+        'notifications': [
+            {
+                'id': n['id'],
+                'job_id': n['job_id'],
+                'message': n['message'],
+                'is_read': bool(n['is_read']),
+                'created_at': n['created_at'],
+            }
+            for n in notifs
+        ]
     })
 
-
-@app.route("/stock/save", methods=["POST"])
+@app.route('/api/job/<job_id>/status')
 @login_required
-def stock_save():
-    """Create or update a stock item via JSON (called from the modal form)."""
-    company_id = get_current_company()
-    data       = request.get_json(force=True)
-
-    code = data.get("code", "").strip().upper()
-    item = StockItem.query.filter_by(company_id=company_id, code=code).first() if code else None
-
-    if item:
-        # update existing
-        item.name          = data.get("name", item.name)
-        item.category      = data.get("category", item.category)
-        item.quantity      = float(data.get("quantity", item.quantity))
-        item.unit          = data.get("unit", item.unit)
-        item.unit_price    = float(data.get("unit_price", item.unit_price))
-        item.reorder_level = float(data.get("reorder_level", item.reorder_level))
-        item.last_updated  = date.today()
-    else:
-        # auto-generate a code if none provided
-        if not code:
-            count = StockItem.query.filter_by(company_id=company_id).count()
-            code  = f"PROD{count + 1:03d}"
-        item = StockItem(
-            company_id    = company_id,
-            code          = code,
-            name          = data.get("name", ""),
-            category      = data.get("category", "Other"),
-            quantity      = float(data.get("quantity", 0)),
-            unit          = data.get("unit", "pcs"),
-            unit_price    = float(data.get("unit_price", 0)),
-            reorder_level = float(data.get("reorder_level", 10)),
-            hsn           = data.get("hsn", ""),
-            last_updated  = date.today(),
-        )
-        db.session.add(item)
-
-    db.session.commit()
-    return jsonify({"success": True, "code": item.code})
-
-
-@app.route("/stock/adjust", methods=["POST"])
-@login_required
-def stock_adjust():
-    """Quick quantity adjustment from the Adj button in the table."""
-    company_id = get_current_company()
-    data       = request.get_json(force=True)
-    code       = data.get("code", "").strip().upper()
-    item       = StockItem.query.filter_by(company_id=company_id, code=code).first_or_404()
-    item.quantity     = float(data.get("quantity", item.quantity))
-    item.last_updated = date.today()
-    db.session.commit()
-    return jsonify({"success": True})
-
-
-@app.route("/inventory/add", methods=["GET", "POST"])
-@login_required
-def inventory_add():
-    company_id = get_current_company()
-    if request.method == "POST":
-        item = StockItem(
-            company_id=company_id,
-            code=request.form.get("code", "").upper(),
-            name=request.form.get("name", ""),
-            category=request.form.get("category", ""),
-            quantity=float(request.form.get("quantity", 0)),
-            unit=request.form.get("unit", "pcs"),
-            unit_price=float(request.form.get("unit_price", 0)),
-            reorder_level=float(request.form.get("reorder_level", 0)),
-            hsn=request.form.get("hsn", ""),
-            last_updated=date.today(),
-        )
-        db.session.add(item)
-        db.session.commit()
-        flash("Stock item added!")
-        return redirect(url_for("inventory_list"))
-    return render_template("inventory_form.html")
-
-
-@app.route("/inventory/edit/<int:item_pk>", methods=["GET", "POST"])
-@login_required
-def inventory_edit(item_pk):
-    company_id = get_current_company()
-    item       = StockItem.query.filter_by(id=item_pk, company_id=company_id).first_or_404()
-    if request.method == "POST":
-        item.name          = request.form.get("name", item.name)
-        item.category      = request.form.get("category", item.category)
-        item.quantity      = float(request.form.get("quantity", item.quantity))
-        item.unit          = request.form.get("unit", item.unit)
-        item.unit_price    = float(request.form.get("unit_price", item.unit_price))
-        item.reorder_level = float(request.form.get("reorder_level", item.reorder_level))
-        item.hsn           = request.form.get("hsn", item.hsn)
-        item.last_updated  = date.today()
-        db.session.commit()
-        flash("Stock item updated!")
-        return redirect(url_for("inventory_list"))
-    return render_template("inventory_form.html", item=item)
-
-
-@app.route("/inventory/delete/<int:item_pk>", methods=["POST"])
-@login_required
-def inventory_delete(item_pk):
-    company_id = get_current_company()
-    item       = StockItem.query.filter_by(id=item_pk, company_id=company_id).first_or_404()
-    db.session.delete(item)
-    db.session.commit()
-    flash("Stock item deleted.")
-    return redirect(url_for("inventory_list"))
-
-
-# ── Purchase Invoice Routes ───────────────────────────────────────────────────
-@app.route("/purchase/list")
-@login_required
-def purchase_invoice_list():
-    company_id = get_current_company()
-    invoices = PurchaseInvoice.query.filter_by(company_id=company_id).order_by(PurchaseInvoice.date.desc()).all()
-    total_amount = sum(p.grand_total  for p in invoices)
-    total_paid   = sum(p.paid_amount  for p in invoices)
-    total_due    = sum(p.balance      for p in invoices)
-
-    return render_template("purchases.html",
-        purchases    = invoices,
-        total_amount = total_amount,
-        total_paid   = total_paid,
-        total_due    = total_due
-    )
-
-
-@app.route("/purchase/new", methods=["GET", "POST"])
-@login_required
-def purchase_invoice_new():
-    company_id = get_current_company()
-    suppliers = Client.query.filter(
-        Client.company_id == company_id,
-        db.or_(Client.client_type == "Supplier", Client.client_type == "Both")
-    ).all()
-    
-    if request.method == "POST":
-        # Get form data
-        supplier_id = request.form.get("supplier_id")
-        invoice_number = request.form.get("invoice_number", "")
-        invoice_date = request.form.get("invoice_date") or str(date.today())
-        due_date = request.form.get("due_date")
-        payment_terms = request.form.get("payment_terms", "")
-        notes = request.form.get("notes", "")
-        
-        # Get line items
-        descriptions = request.form.getlist("item_description[]")
-        quantities = request.form.getlist("item_quantity[]")
-        units = request.form.getlist("item_unit[]")
-        rates = request.form.getlist("item_rate[]")
-        gst_percents = request.form.getlist("item_gst[]")
-        
-        subtotal = 0
-        tax_total = 0
-        items_data = []
-        
-        for i in range(len(descriptions)):
-            if descriptions[i] and descriptions[i].strip():
-                qty = float(quantities[i]) if quantities[i] else 0
-                rate = float(rates[i]) if rates[i] else 0
-                gst = float(gst_percents[i]) if gst_percents[i] else 0
-                
-                line_total = qty * rate
-                tax_amount = line_total * (gst / 100)
-                
-                subtotal += line_total
-                tax_total += tax_amount
-                
-                items_data.append({
-                    "description": descriptions[i],
-                    "quantity": qty,
-                    "unit": units[i] if units[i] else "pcs",
-                    "rate": rate,
-                    "gst": gst,
-                    "total": line_total + tax_amount
-                })
-        
-        grand_total = subtotal + tax_total
-        
-        # Create purchase invoice
-        inv_count = PurchaseInvoice.query.count()
-        invoice_id = f"PURCHASE-INV-{datetime.now().strftime('%Y%m%d')}-{inv_count+1:03d}"
-        
-        purchase_inv = PurchaseInvoice(
-            invoice_id=invoice_id,
-            company_id=company_id,
-            supplier_id=int(supplier_id) if supplier_id else None,
-            invoice_number=invoice_number,
-            date=date.fromisoformat(invoice_date),
-            due_date=date.fromisoformat(due_date) if due_date else None,
-            subtotal=subtotal,
-            tax_amount=tax_total,
-            grand_total=grand_total,
-            paid_amount=0,
-            balance=grand_total,
-            status="Pending",
-            payment_terms=payment_terms,
-            notes=notes,
-            created_at=datetime.utcnow()
-        )
-        db.session.add(purchase_inv)
-        db.session.flush()
-        
-        # Create line items and update stock
-        for item in items_data:
-            # Find or create stock item
-            stock_item = StockItem.query.filter_by(
-                company_id=company_id,
-                name=item["description"]
-            ).first()
-            
-            if not stock_item:
-                # Create new stock item
-                stock_count = StockItem.query.filter_by(company_id=company_id).count()
-                stock_item = StockItem(
-                    company_id=company_id,
-                    code=f"AUTO-{stock_count+1:03d}",
-                    name=item["description"],
-                    category="Purchase",
-                    quantity=0,
-                    unit=item["unit"],
-                    unit_price=0,  # Will be set by selling price later
-                    purchase_rate=item["rate"],
-                    last_purchase_rate=item["rate"],
-                    gst_percent=item["gst"],
-                    last_updated=date.today()
-                )
-                db.session.add(stock_item)
-                db.session.flush()
-            
-            # Update stock quantity
-            stock_item.quantity += item["quantity"]
-            stock_item.last_purchase_rate = item["rate"]
-            stock_item.gst_percent = item["gst"]
-            stock_item.last_updated = date.today()
-            
-            # Add purchase history
-            purchase_history = StockPurchaseHistory(
-                stock_item_id=stock_item.id,
-                purchase_invoice_id=purchase_inv.id,
-                quantity=item["quantity"],
-                purchase_rate=item["rate"],
-                gst_percent=item["gst"],
-                purchase_date=date.fromisoformat(invoice_date)
-            )
-            db.session.add(purchase_history)
-            
-            # Create invoice item
-            inv_item = PurchaseInvoiceItem(
-                purchase_invoice_id=purchase_inv.id,
-                stock_item_id=stock_item.id,
-                description=item["description"],
-                quantity=item["quantity"],
-                unit=item["unit"],
-                purchase_rate=item["rate"],
-                gst_percent=item["gst"],
-                total_amount=item["total"]
-            )
-            db.session.add(inv_item)
-            
-            # Update supplier pending amount
-            supplier = Client.query.get(supplier_id)
-            if supplier:
-                supplier.pending += (item["total"])  # Add to pending
-                supplier.last_payment = date.today()
-        
-        db.session.commit()
-        
-        # Handle file upload for OCR
-        if 'invoice_file' in request.files:
-            file = request.files['invoice_file']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(f"{invoice_id}_{file.filename}")
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(filepath)
-                purchase_inv.file_path = filepath
-                
-                # Perform OCR extraction
-                extracted_text = ""
-                if filename.lower().endswith('.pdf'):
-                    with open(filepath, 'rb') as f:
-                        extracted_text = extract_invoice_from_pdf(f.read())
-                else:
-                    with open(filepath, 'rb') as f:
-                        extracted_text = extract_invoice_from_image(f.read())
-                
-                # Parse extracted data
-                parsed_data = parse_invoice_data(extracted_text)
-                purchase_inv.ocr_data = json.dumps(parsed_data)
-                db.session.commit()
-        
-        flash(f"Purchase invoice {invoice_id} created successfully!")
-        return redirect(url_for("purchase_invoice_list"))
-    
-    return render_template("purchase_form.html", suppliers=suppliers, today=str(date.today()))
-
-
-@app.route("/purchase/upload-ocr", methods=["POST"])
-@login_required
-def purchase_upload_ocr():
-    """AJAX endpoint to upload file and get OCR extracted data"""
-    company_id = get_current_company()
-    
-    if 'file' not in request.files:
-        return jsonify({"success": False, "error": "No file uploaded"}), 400
-    
-    file = request.files['file']
-    if not file or not allowed_file(file.filename):
-        return jsonify({"success": False, "error": "Invalid file type. Please upload PDF, PNG, JPG, or JPEG"}), 400
-    
-    try:
-        # Read file content
-        file_bytes = file.read()
-        
-        # Extract text based on file type
-        if file.filename.lower().endswith('.pdf'):
-            extracted_text = extract_invoice_from_pdf(file_bytes)
-        else:
-            extracted_text = extract_invoice_from_image(file_bytes)
-        
-        if not extracted_text or len(extracted_text.strip()) < 10:
-            return jsonify({
-                "success": False, 
-                "error": "Could not read text from file. Please ensure the invoice is clear and try again."
-            }), 400
-        
-        # Parse extracted data
-        parsed_data = parse_invoice_data(extracted_text)
-        
-        # Find matching supplier from extracted name
-        if parsed_data.get("supplier_name"):
-            supplier = Client.query.filter(
-                Client.company_id == company_id,
-                db.or_(
-                    Client.name.ilike(f"%{parsed_data['supplier_name']}%"),
-                    Client.client_type == "Supplier"
-                )
-            ).first()
-            if supplier:
-                parsed_data["supplier_id"] = supplier.id
-                parsed_data["supplier_name"] = supplier.name
-                print(f"✓ Matched supplier: {supplier.name}")
-        
-        # Add debug info
-        parsed_data["extracted_text_preview"] = extracted_text[:200]
-        parsed_data["item_count"] = len(parsed_data.get("items", []))
-        
-        return jsonify({"success": True, "data": parsed_data})
-        
-    except Exception as e:
-        print(f"OCR processing error: {e}")
-        return jsonify({"success": False, "error": f"Error processing file: {str(e)}"}), 500
-
-
-@app.route("/purchase/view/<invoice_id>")
-@login_required
-def purchase_invoice_view(invoice_id):
-    company_id = get_current_company()
-    invoice = PurchaseInvoice.query.filter_by(invoice_id=invoice_id, company_id=company_id).first_or_404()
-    return render_template("purchase_view.html", invoice=invoice)
-
-
-@app.route("/purchase/pay/<int:pk>", methods=["POST"])
-@login_required
-def purchase_make_payment(pk):
-    company_id = get_current_company()
-    invoice = PurchaseInvoice.query.filter_by(id=pk, company_id=company_id).first_or_404()
-    
-    amount = float(request.form.get("amount", 0))
-    if amount > invoice.balance:
-        flash("Payment amount exceeds pending balance!")
-        return redirect(url_for("purchase_invoice_view", invoice_id=invoice.invoice_id))
-    
-    invoice.paid_amount += amount
-    invoice.balance -= amount
-    
-    if invoice.balance == 0:
-        invoice.status = "Paid"
-    elif invoice.paid_amount > 0:
-        invoice.status = "Partial"
-    
-    # Update supplier's pending amount (reduce by payment)
-    if invoice.supplier:
-        invoice.supplier.pending -= amount
-    
-    db.session.commit()
-    flash(f"Payment of ₹{amount:,.2f} recorded!")
-    return redirect(url_for("purchase_invoice_view", invoice_id=invoice.invoice_id))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Invoices ──────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/invoice/list")
-@login_required
-def invoice_list():
-    company_id    = get_current_company()
-    filter_status = request.args.get("status", "All")
-
-    # Map template tab names -> DB status values
-    status_map = {
-        "paid":    "Paid",
-        "partial": "Partial",
-        "pending": "Draft",
-    }
-
-    query = Invoice.query.filter_by(company_id=company_id)
-    if filter_status != "All":
-        db_status = status_map.get(filter_status)
-        if db_status:
-            query = query.filter_by(status=db_status)
-
-    raw_invoices = query.order_by(Invoice.date.desc()).all()
-
-    # Normalize into dicts that match invoice_list.html field names:
-    # inv.id, inv.customer_name, inv.date, inv.bill_type,
-    # inv.total, inv.paid, inv.balance, inv.status
-    invoices = []
-    for inv in raw_invoices:
-        if inv.client_obj:
-            customer_name = inv.client_obj.name
-        elif inv.contact_person:
-            customer_name = inv.contact_person
-        else:
-            customer_name = "—"
-
-        total = inv.grand_total or 0.0
-
-        if inv.status == "Paid":
-            paid      = total
-            balance   = 0.0
-            tab_status = "paid"
-        elif inv.status == "Partial":
-            paid      = inv.subtotal or 0.0
-            balance   = total - paid
-            tab_status = "partial"
-        else:
-            paid      = 0.0
-            balance   = total
-            tab_status = "pending"
-
-        invoices.append({
-            "id":            inv.invoice_id,
-            "customer_name": customer_name,
-            "date":          inv.date,
-            "bill_type":     "credit",
-            "total":         total,
-            "paid":          paid,
-            "balance":       balance,
-            "status":        tab_status,
-        })
-
-    return render_template("invoice_list.html",
-                           invoices=invoices,
-                           current_status=filter_status)
-
-
-@app.route("/invoice/new", methods=["GET", "POST"])
-@login_required
-def invoice_new():
-    company_id = get_current_company()
-    clients    = Client.query.filter_by(company_id=company_id).all()
-
-    edit_id  = request.args.get("edit")
-    existing = Invoice.query.filter_by(invoice_id=edit_id, company_id=company_id).first() if edit_id else None
-
-    if request.method == "POST":
-        item_codes   = request.form.getlist("item_code[]")
-        descriptions = request.form.getlist("description[]")
-        qtys         = request.form.getlist("qty[]")
-        rates        = request.form.getlist("rate[]")
-        discounts    = request.form.getlist("discount[]")
-
-        subtotal = 0
-        line_items = []
-        for i in range(len(descriptions)):
-            if descriptions[i] and descriptions[i].strip():
-                qty  = float(qtys[i])  if qtys[i]  else 0
-                rate = float(rates[i]) if rates[i] else 0
-                disc = float(discounts[i]) if discounts[i] else 0
-                total_line = qty * rate * (1 - disc / 100)
-                subtotal  += total_line
-                line_items.append((item_codes[i], descriptions[i], qty, rate, disc))
-
-        tax         = subtotal * 0.18
-        grand_total = subtotal + tax
-
-        client_id_raw = request.form.get("client_id")
-        client_id     = int(client_id_raw) if client_id_raw else None
-
-        if existing:
-            existing.client_id      = client_id
-            existing.date           = date.fromisoformat(request.form.get("invoice_date") or str(date.today()))
-            existing.status         = request.form.get("status", "Draft")
-            existing.contact_person = request.form.get("contact_person", "")
-            existing.email          = request.form.get("email", "")
-            existing.phone          = request.form.get("phone", "")
-            existing.subtotal       = subtotal
-            existing.tax_amount     = tax
-            existing.grand_total    = grand_total
-            existing.terms          = request.form.get("terms", "")
-            # rebuild line items
-            InvoiceItem.query.filter_by(invoice_id=existing.id).delete()
-            for code, desc, qty, rate, disc in line_items:
-                si = StockItem.query.filter_by(company_id=company_id, code=code.upper()).first()
-                db.session.add(InvoiceItem(
-                    invoice_id=existing.id,
-                    stock_item_id=si.id if si else None,
-                    code=code, description=desc, qty=qty, rate=rate, discount=disc,
-                ))
-            db.session.commit()
-            flash(f"Invoice {existing.invoice_id} updated!")
-        else:
-            inv_count  = Invoice.query.count()
-            invoice_id = f"INV-{datetime.now().strftime('%Y%m%d')}-{inv_count+1:03d}"
-            inv        = Invoice(
-                invoice_id=invoice_id, company_id=company_id,
-                client_id=client_id,
-                date=date.fromisoformat(request.form.get("invoice_date") or str(date.today())),
-                due_date=date.fromisoformat(request.form.get("due_date")) if request.form.get("due_date") else None,
-                status=request.form.get("status", "Draft"),
-                contact_person=request.form.get("contact_person", ""),
-                email=request.form.get("email", ""),
-                phone=request.form.get("phone", ""),
-                subtotal=subtotal, tax_amount=tax, grand_total=grand_total,
-                terms=request.form.get("terms", ""),
-            )
-            db.session.add(inv)
-            db.session.flush()
-            for code, desc, qty, rate, disc in line_items:
-                si = StockItem.query.filter_by(company_id=company_id, code=code.upper()).first()
-                db.session.add(InvoiceItem(
-                    invoice_id=inv.id,
-                    stock_item_id=si.id if si else None,
-                    code=code, description=desc, qty=qty, rate=rate, discount=disc,
-                ))
-            db.session.commit()
-            flash(f"Invoice {invoice_id} created!")
-
-        return redirect(url_for("invoice_list"))
-
-    return render_template("invoice.html",
-                           clients=clients, invoice=existing,
-                           today=str(date.today()),
-                           due_date=str(date.today() + timedelta(days=30)),
-                           form_data={})
-
-
-@app.route("/invoice/view/<invoice_id>")
-@login_required
-def invoice_view(invoice_id):
-    company_id = get_current_company()
-    inv        = Invoice.query.filter_by(invoice_id=invoice_id, company_id=company_id).first_or_404()
-
-    # Resolve customer name & phone
-    if inv.client_obj:
-        customer_name  = inv.client_obj.name
-        customer_phone = inv.client_obj.phone or inv.phone or ""
-    else:
-        customer_name  = inv.contact_person or "—"
-        customer_phone = inv.phone or ""
-
-    total    = inv.grand_total or 0.0
-    subtotal = inv.subtotal    or 0.0
-    tax      = inv.tax_amount  or 0.0
-
-    # Derive paid / balance / tab-status from DB status
-    db_status = (inv.status or "").lower()
-    if db_status == "paid":
-        paid       = total
-        balance    = 0.0
-        tab_status = "paid"
-    elif db_status == "partial":
-        paid       = subtotal
-        balance    = total - paid
-        tab_status = "partial"
-    else:
-        paid       = 0.0
-        balance    = total
-        tab_status = "pending"
-
-    # Normalize line items — template uses item.desc, item.code, item.qty,
-    # item.rate, item.discount
-    items = []
-    for li in inv.items:
-        qty      = li.qty      or 0.0
-        rate     = li.rate     or 0.0
-        discount = li.discount or 0.0
-        items.append({
-            "code":     li.code        or "",
-            "desc":     li.description or "",
-            "qty":      qty,
-            "rate":     rate,
-            "discount": discount,
-            "amount":   qty * rate * (1 - discount / 100),
-        })
-
-    invoice = {
-        "id":             inv.invoice_id,
-        "date":           inv.date,
-        "due_date":       inv.due_date,
-        "status":         tab_status,
-        "customer_name":  customer_name,
-        "customer_phone": customer_phone,
-        "subtotal":       subtotal,
-        "tax":            tax,
-        "total":          total,
-        "paid":           paid,
-        "balance":        balance,
-        "bill_type":      "credit",
-        "payment_mode":   "credit",
-        "cheque_no":      "",
-        "transaction_id": "",
-        "items":          items,
-        "related_orders": [],
-        "terms":          inv.terms or "",
-    }
-
-    return render_template("invoice_view.html", invoice=invoice)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Estimates ─────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/estimate/list")
-@login_required
-def estimate_list():
-    company_id    = get_current_company()
-    filter_status = request.args.get("status", "All")
-    query         = Estimate.query.filter_by(company_id=company_id)
-    if filter_status != "All":
-        query = query.filter_by(status=filter_status)
-    estimates = query.order_by(Estimate.date.desc()).all()
-    return render_template("estimate_list.html", estimates=estimates, current_status=filter_status)
-
-
-@app.route("/estimate/new", methods=["GET", "POST"])
-@login_required
-def estimate_new():
-    company_id = get_current_company()
-    clients    = Client.query.filter_by(company_id=company_id).all()
-
-    edit_id  = request.args.get("edit")
-    existing = Estimate.query.filter_by(estimate_id=edit_id, company_id=company_id).first() if edit_id else None
-
-    if request.method == "POST":
-        item_codes   = request.form.getlist("item_code[]")
-        descriptions = request.form.getlist("description[]")
-        qtys         = request.form.getlist("qty[]")
-        rates        = request.form.getlist("rate[]")
-        discounts    = request.form.getlist("discount[]")
-
-        subtotal   = 0
-        line_items = []
-        for i in range(len(descriptions)):
-            if descriptions[i] and descriptions[i].strip():
-                qty  = float(qtys[i])  if qtys[i]  else 0
-                rate = float(rates[i]) if rates[i] else 0
-                disc = float(discounts[i]) if discounts[i] else 0
-                subtotal += qty * rate * (1 - disc / 100)
-                line_items.append((item_codes[i], descriptions[i], qty, rate, disc))
-
-        tax         = subtotal * 0.18
-        grand_total = subtotal + tax
-
-        client_id_raw = request.form.get("client_id")
-        client_id     = int(client_id_raw) if client_id_raw else None
-
-        if existing:
-            existing.client_id      = client_id
-            existing.date           = date.fromisoformat(request.form.get("estimate_date") or str(date.today()))
-            existing.valid_until    = date.fromisoformat(request.form.get("valid_until")) if request.form.get("valid_until") else None
-            existing.status         = request.form.get("status", "Draft")
-            existing.contact_person = request.form.get("contact_person", "")
-            existing.email          = request.form.get("email", "")
-            existing.phone          = request.form.get("phone", "")
-            existing.subtotal       = subtotal
-            existing.tax_amount     = tax
-            existing.grand_total    = grand_total
-            existing.terms          = request.form.get("terms", "")
-            EstimateItem.query.filter_by(estimate_id=existing.id).delete()
-            for code, desc, qty, rate, disc in line_items:
-                si = StockItem.query.filter_by(company_id=company_id, code=code.upper()).first()
-                db.session.add(EstimateItem(
-                    estimate_id=existing.id,
-                    stock_item_id=si.id if si else None,
-                    code=code, description=desc, qty=qty, rate=rate, discount=disc,
-                ))
-            db.session.commit()
-            flash(f"Estimate {existing.estimate_id} updated!")
-        else:
-            est_count   = Estimate.query.count()
-            estimate_id = f"EST-{datetime.now().strftime('%Y%m%d')}-{est_count+1:03d}"
-            est         = Estimate(
-                estimate_id=estimate_id, company_id=company_id,
-                client_id=client_id,
-                date=date.fromisoformat(request.form.get("estimate_date") or str(date.today())),
-                valid_until=date.fromisoformat(request.form.get("valid_until")) if request.form.get("valid_until") else None,
-                status=request.form.get("status", "Draft"),
-                contact_person=request.form.get("contact_person", ""),
-                email=request.form.get("email", ""),
-                phone=request.form.get("phone", ""),
-                subtotal=subtotal, tax_amount=tax, grand_total=grand_total,
-                terms=request.form.get("terms", ""),
-            )
-            db.session.add(est)
-            db.session.flush()
-            for code, desc, qty, rate, disc in line_items:
-                si = StockItem.query.filter_by(company_id=company_id, code=code.upper()).first()
-                db.session.add(EstimateItem(
-                    estimate_id=est.id,
-                    stock_item_id=si.id if si else None,
-                    code=code, description=desc, qty=qty, rate=rate, discount=disc,
-                ))
-            db.session.commit()
-            flash(f"Estimate {estimate_id} created!")
-
-        return redirect(url_for("estimate_list"))
-
-    valid_until = str(date.today() + timedelta(days=30))
-    return render_template("estimate.html",
-                       clients=clients, estimate=existing,
-                       today=str(date.today()), valid_until=valid_until,
-                       form_data={})
-
-@app.route("/estimate/edit/<estimate_id>")
-@login_required
-def estimate_edit(estimate_id):
-    return redirect(url_for("estimate_new", edit=estimate_id))
-
-
-@app.route("/estimate/view/<estimate_id>")
-@login_required
-def estimate_view(estimate_id):
-    company_id = get_current_company()
-    estimate   = Estimate.query.filter_by(estimate_id=estimate_id, company_id=company_id).first_or_404()
-    return render_template("estimate_view_new.html", estimate=estimate)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Super Admin ───────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/admin/dashboard")
-@login_required
-@super_admin_required
-def admin_dashboard():
-    stats = {
-        "total_companies":  Company.query.count(),
-        "total_users":      CompanyUser.query.count(),
-        "active_companies": Company.query.filter_by(is_active=True).count(),
-        "monthly_revenue":  0,
-    }
-    plan_distribution = {}
-    for c in Company.query.all():
-        plan_distribution[c.subscription_plan] = plan_distribution.get(c.subscription_plan, 0) + 1
-
-    return render_template("super_admin.html",
-                           stats=stats,
-                           companies=Company.query.all(),
-                           plans=get_all_plans(),
-                           plan_distribution=plan_distribution)
-
-
-@app.route("/admin/companies")
-@login_required
-@super_admin_required
-def admin_companies():
-    return render_template("admin_companies.html", companies=Company.query.all())
-
-
-@app.route("/admin/company/<company_id>")
-@login_required
-@super_admin_required
-def admin_company_detail(company_id):
-    company = get_company_by_id(company_id)
-    users   = CompanyUser.query.filter_by(company_id=company_id).all()
-    return render_template("admin_company_detail.html",
-                           company=company, users=users, plans=get_all_plans())
-
-
-@app.route("/admin/company/<company_id>/update-plan", methods=["POST"])
-@login_required
-@super_admin_required
-def admin_update_company_plan(company_id):
-    plan_id = request.form.get("plan")
-    company = get_company_by_id(company_id)
-    plan    = SubscriptionPlan.query.get(plan_id)
-    if company and plan:
-        company.subscription_plan     = plan.id
-        company.max_companies_allowed = plan.max_companies
-        company.max_users_per_company = plan.max_users
-        db.session.commit()
-        flash(f"Company plan updated to {plan.name}")
-    return redirect(url_for("admin_company_detail", company_id=company_id))
-
-
-@app.route("/admin/company/<company_id>/toggle-status", methods=["POST"])
-@login_required
-@super_admin_required
-def admin_toggle_company_status(company_id):
-    company = get_company_by_id(company_id)
-    if company:
-        company.is_active = not company.is_active
-        db.session.commit()
-        status = "activated" if company.is_active else "suspended"
-        flash(f"Company {status}")
-    return redirect(url_for("admin_company_detail", company_id=company_id))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Employee Management ───────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/employees")
-@login_required
-@owner_required
-def employee_list():
-    company_id = get_current_company()
-    employees  = CompanyUser.query.filter_by(company_id=company_id).all()
-    return render_template("employees.html", employees=employees)
-
-
-@app.route("/employees/add", methods=["GET", "POST"])
-@login_required
-@owner_required
-def employee_add():
-    company_id = get_current_company()
-    can_add, msg = check_company_limit(company_id, "user")
-    if not can_add:
-        flash(msg)
-        return redirect(url_for("employee_list"))
-
-    if request.method == "POST":
-        email    = request.form.get("email", "").strip().lower()
-        password = request.form.get("password", "")
-        emp_count = CompanyUser.query.count()
-        emp_id    = f"EMP{emp_count + 1:03d}"
-        new_emp   = CompanyUser(
-            user_id=emp_id, company_id=company_id, email=email,
-            password_hash=hash_password(password),
-            full_name=request.form.get("full_name", ""),
-            role=request.form.get("role", "employee"),
-            department=request.form.get("department", ""),
-            phone=request.form.get("phone", ""),
-            is_active=True, created_at=date.today(),
-        )
-        db.session.add(new_emp)
-        db.session.commit()
-        flash("Employee added!")
-        return redirect(url_for("employee_list"))
-    return render_template("employee_form.html")
-
-
-@app.route("/employees/toggle/<user_id>", methods=["POST"])
-@login_required
-@owner_required
-def employee_toggle(user_id):
-    company_id = get_current_company()
-    emp        = CompanyUser.query.filter_by(user_id=user_id, company_id=company_id).first_or_404()
-    emp.is_active = not emp.is_active
-    db.session.commit()
-    flash(f"Employee {'activated' if emp.is_active else 'deactivated'}.")
-    return redirect(url_for("employee_list"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Product Lookup API ────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/api/product/<code>")
-@login_required
-def api_product_lookup(code):
-    company_id = get_current_company()
-    code_clean = code.strip().upper()
-    item = StockItem.query.filter_by(company_id=company_id, code=code_clean).first()
-    if not item:
-        item = StockItem.query.filter(
-            StockItem.company_id == company_id,
-            StockItem.name.ilike(f"%{code_clean}%")
-        ).first()
-    if not item:
-        return jsonify({"found": False, "message": f"No product found for '{code}'"}), 404
+def api_job_status(job_id):
+    db = get_db()
+    job = db.execute(
+        "SELECT j.*, u.name as tech_name FROM jobs j LEFT JOIN users u ON j.assigned_tech_id=u.id WHERE j.job_id=?",
+        (job_id,)
+    ).fetchone()
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    if session.get('role') not in ('admin', 'manager'):
+        if job['assigned_tech_id'] != session['user_id']:
+            return jsonify({'error': 'Access denied'}), 403
+    logs = db.execute(
+        """SELECT l.*, u.name as user_name FROM job_logs l
+           LEFT JOIN users u ON l.performed_by=u.id
+           WHERE l.job_id=? ORDER BY l.created_at DESC LIMIT 20""",
+        (job_id,)
+    ).fetchall()
     return jsonify({
-        "found": True, "code": item.code, "name": item.name,
-        "rate": item.unit_price, "unit": item.unit or "pcs",
-        "category": item.category or "", "stock": item.quantity,
-        "hsn": item.hsn or "",
-        "low_stock": item.quantity <= item.reorder_level,
-    }), 200
+        'status': job['status'],
+        'updated_at': job['updated_at'],
+        'tech_name': job['tech_name'],
+        'payment_status': job['payment_status'],
+        'parts_cost': job['parts_cost'],
+        'labour_cost': job['labour_cost'],
+        'total_amount': job['total_amount'],
+        'invoice_number': job['invoice_number'],
+        'payment_link': job['payment_link'],
+        'tracking_number': job['tracking_number'],
+        'courier_name': job['courier_name'],
+        'dispatch_date': job['dispatch_date'],
+        'expected_delivery': job['expected_delivery'],
+        'repair_findings': job['repair_findings'],
+        'inspection_findings': job['inspection_findings'],
+        'estimate_amount': job['estimate_amount'],
+        'estimate_notes': job['estimate_notes'],
+        'not_repairable_reason': job['not_repairable_reason'],
+        'logs': [
+            {
+                'user_name': l['user_name'] or 'System',
+                'action': l['action'],
+                'details': l['details'],
+                'created_at': l['created_at'],
+            }
+            for l in logs
+        ],
+    })
 
+# ─── ADMIN ROUTES ─────────────────────────────────────────────────────────────
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    db = get_db()
+    search = request.args.get('search', '').strip()
 
-@app.route("/api/products/search")
-@login_required
-def api_products_search():
-    company_id = get_current_company()
-    q = request.args.get("q", "").strip().upper()
-    if not q:
-        return jsonify({"results": []})
-    items = StockItem.query.filter(
-        StockItem.company_id == company_id,
-        db.or_(StockItem.code.ilike(f"%{q}%"), StockItem.name.ilike(f"%{q}%"))
-    ).limit(8).all()
-    return jsonify({"results": [{
-        "code": s.code, "name": s.name, "rate": s.unit_price,
-        "unit": s.unit or "pcs", "stock": s.quantity, "hsn": s.hsn or "",
-    } for s in items]})
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Profile ───────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-@app.route("/profile")
-@login_required
-def profile():
-    user = get_current_user()
-    return render_template("profile.html", user=user)
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Company Settings ──────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-
-@app.route("/company/settings")
-@login_required
-@owner_required
-def company_settings():
-    company_id = get_current_company()
-    company    = get_company_by_id(company_id)
-    users      = CompanyUser.query.filter_by(company_id=company_id).all()
-    plans = {
-        p.id: {
-            "name":          p.name,
-            "price":         p.price,
-            "max_companies": p.max_companies,
-            "max_users":     p.max_users,
-            "features":      p.features.split(",") if p.features else [],
-        }
-        for p in SubscriptionPlan.query.all()
+    stats = {
+        'total':           db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+        'sent_for_repair': db.execute("SELECT COUNT(*) FROM jobs WHERE status='sent_for_repair'").fetchone()[0],
+        'payment_pending': db.execute("SELECT COUNT(*) FROM jobs WHERE payment_status='pending' AND status='invoice_uploaded'").fetchone()[0],
+        'dispatched':      db.execute("SELECT COUNT(*) FROM jobs WHERE status='dispatched'").fetchone()[0],
+        'closed':          db.execute("SELECT COUNT(*) FROM jobs WHERE status='closed'").fetchone()[0],
     }
-    current_plan = plans.get(company.subscription_plan) if company else None
-    return render_template("company_settings.html",
-                           company=company,
-                           users=users,
-                           plans=plans,
-                           current_plan=current_plan)
 
+    rev_row = db.execute("""
+        SELECT
+            COALESCE(SUM(total_amount), 0) AS total_revenue,
+            COALESCE(SUM(parts_cost), 0) AS total_parts,
+            COALESCE(SUM(labour_cost), 0) AS total_labour,
+            COALESCE(SUM(CASE WHEN payment_status='paid' THEN total_amount ELSE 0 END), 0) AS paid_revenue
+        FROM jobs
+    """).fetchone()
 
-@app.route("/company/update-info", methods=["POST"])
-@login_required
-@owner_required
-def update_company_info():
-    company_id = get_current_company()
-    company    = get_company_by_id(company_id)
-    if company:
-        company.company_name = request.form.get("company_name", company.company_name).strip()
-        company.address      = request.form.get("address",      company.address)
-        company.phone        = request.form.get("phone",        company.phone)
-        company.gst_number   = request.form.get("gst_number",   company.gst_number)
-        db.session.commit()
-        # Keep session in sync
-        if "user" in session:
-            session["user"]["company_name"] = company.company_name
-            session.modified = True
-        flash("Company information updated successfully.")
+    status_rows = db.execute("SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status").fetchall()
+    status_counts = {r['status']: r['cnt'] for r in status_rows}
+
+    tech_rows = db.execute("""
+        SELECT
+            COALESCE(u.name, 'Unassigned') AS name,
+            COALESCE(SUM(j.total_amount), 0) AS revenue,
+            COALESCE(SUM(j.parts_cost), 0) AS parts,
+            COALESCE(SUM(j.labour_cost), 0) AS labour
+        FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        GROUP BY j.assigned_tech_id
+        ORDER BY revenue DESC
+    """).fetchall()
+    tech_revenue = [dict(r) for r in tech_rows]
+
+    monthly_rows = db.execute("""
+        SELECT
+            strftime('%Y-%m', received_at) AS month,
+            COUNT(*) AS jobs,
+            COALESCE(SUM(total_amount), 0) AS revenue
+        FROM jobs
+        WHERE received_at >= date('now', '-6 months')
+        GROUP BY month
+        ORDER BY month
+    """).fetchall()
+    monthly = [dict(r) for r in monthly_rows]
+
+    item_rows = db.execute("""
+        SELECT item_type, COUNT(*) AS count
+        FROM jobs
+        WHERE item_type IS NOT NULL AND item_type != ''
+        GROUP BY item_type
+        ORDER BY count DESC
+    """).fetchall()
+    item_types = [dict(r) for r in item_rows]
+
+    analytics = {
+        'total_revenue': rev_row['total_revenue'],
+        'total_parts': rev_row['total_parts'],
+        'total_labour': rev_row['total_labour'],
+        'paid_revenue': rev_row['paid_revenue'],
+        'status_counts': status_counts,
+        'tech_revenue': tech_revenue,
+        'monthly': monthly,
+        'item_types': item_types,
+    }
+
+    if search:
+        recent_jobs = db.execute("""
+            SELECT j.*, u.name as tech_name FROM jobs j
+            LEFT JOIN users u ON j.assigned_tech_id = u.id
+            WHERE j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?
+            ORDER BY j.received_at DESC LIMIT 50
+        """, (f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%')).fetchall()
     else:
-        flash("Company not found.")
-    return redirect(url_for("company_settings"))
+        recent_jobs = db.execute("""
+            SELECT j.*, u.name as tech_name FROM jobs j
+            LEFT JOIN users u ON j.assigned_tech_id = u.id
+            ORDER BY j.received_at DESC LIMIT 20
+        """).fetchall()
+
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    return render_template('admin/dashboard.html', stats=stats, jobs=recent_jobs,
+                           technicians=technicians, status_flow=STATUS_FLOW,
+                           search=search, analytics=analytics)
+
+@app.route('/admin/jobs')
+@admin_required
+def admin_jobs():
+    db = get_db()
+    status_filter = request.args.get('status', '')
+    search = request.args.get('search', '')
+    query = """
+        SELECT j.*, u.name as tech_name FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE 1=1
+    """
+    params = []
+    if status_filter:
+        query += " AND j.status=?"
+        params.append(status_filter)
+    if search:
+        query += " AND (j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?)"
+        params.extend([f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'])
+    query += " ORDER BY j.received_at DESC"
+    jobs = db.execute(query, params).fetchall()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    return render_template('admin/jobs.html', jobs=jobs, status_flow=STATUS_FLOW,
+                           technicians=technicians, status_filter=status_filter, search=search)
+
+@app.route('/admin/jobs/export')
+@admin_required
+def admin_jobs_export():
+    """Export all jobs to Excel (.xlsx)"""
+    db = get_db()
+    status_filter = request.args.get('status', '')
+    search = request.args.get('search', '')
+
+    query = """
+        SELECT j.job_id, j.customer_name, j.customer_phone, j.customer_email,
+               j.item_type, j.item_description, j.status, j.payment_status,
+               u.name as tech_name,
+               j.parts_cost, j.labour_cost, j.total_amount, j.invoice_total_amount,
+               j.invoice_number, j.payment_method,
+               j.received_at, j.updated_at, j.dispatch_date, j.tracking_number,
+               j.courier_name, j.repair_findings, j.notes
+        FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE 1=1
+    """
+    params = []
+    if status_filter:
+        query += " AND j.status=?"
+        params.append(status_filter)
+    if search:
+        query += " AND (j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?)"
+        params.extend([f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'])
+    query += " ORDER BY j.received_at DESC"
+    jobs = db.execute(query, params).fetchall()
+
+    if not OPENPYXL_AVAILABLE:
+        # Fallback: CSV export
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        headers = ['Job ID','Customer','Phone','Email','Item Type','Description','Status',
+                   'Payment Status','Technician','Parts Cost','Labour Cost','Total Amount',
+                   'Invoice Amount','Invoice #','Payment Method','Received At','Updated At',
+                   'Dispatch Date','Tracking #','Courier','Repair Findings','Notes']
+        writer.writerow(headers)
+        for j in jobs:
+            writer.writerow([
+                j['job_id'], j['customer_name'], j['customer_phone'], j['customer_email'],
+                j['item_type'], j['item_description'],
+                STATUS_FLOW.get(j['status'], {}).get('label', j['status']),
+                j['payment_status'], j['tech_name'],
+                j['parts_cost'] or 0, j['labour_cost'] or 0, j['total_amount'] or 0,
+                j['invoice_total_amount'] or 0, j['invoice_number'], j['payment_method'] or '',
+                j['received_at'], j['updated_at'], j['dispatch_date'],
+                j['tracking_number'], j['courier_name'], j['repair_findings'], j['notes']
+            ])
+        output.seek(0)
+        filename = f"jobs_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return send_file(io.BytesIO(output.getvalue().encode()), mimetype='text/csv',
+                         as_attachment=True, download_name=filename)
+
+    # ── Build Excel workbook ───────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Jobs Export"
+
+    # Color palette
+    HEADER_FILL   = PatternFill("solid", fgColor="1A1D2E")
+    ALT_FILL      = PatternFill("solid", fgColor="F4F6FF")
+    ACCENT_COLOR  = "4A9EFF"
+    HEADER_FONT   = Font(bold=True, color="FFFFFF", size=11)
+    TITLE_FONT    = Font(bold=True, color="1A1D2E", size=14)
+    MONEY_FONT    = Font(bold=True, color="22C55E", size=11)
+    thin_side     = Side(style='thin', color='D1D5DB')
+    thin_border   = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+    # ── Title row ─────────────────────────────────────────────────────────────
+    ws.merge_cells('A1:V1')
+    title_cell = ws['A1']
+    title_cell.value = f"Maktronics — Jobs Export  ({datetime.datetime.now().strftime('%d %b %Y, %H:%M')})"
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    title_cell.fill = PatternFill("solid", fgColor="EEF4FF")
+    ws.row_dimensions[1].height = 30
+
+    # ── Summary row ───────────────────────────────────────────────────────────
+    ws.merge_cells('A2:V2')
+    total_amt = sum((j['total_amount'] or 0) for j in jobs)
+    paid_count = sum(1 for j in jobs if j['payment_status'] == 'paid')
+    summary = ws['A2']
+    summary.value = (f"Total Jobs: {len(jobs)}   |   "
+                     f"Paid: {paid_count}   |   "
+                     f"Pending: {len(jobs)-paid_count}   |   "
+                     f"Total Revenue: ₹{total_amt:,.2f}")
+    summary.font = Font(italic=True, color="6B7280", size=10)
+    summary.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[2].height = 22
+
+    # ── Column headers ────────────────────────────────────────────────────────
+    COLUMNS = [
+        ('Job ID',           16), ('Customer',        20), ('Phone',          14),
+        ('Email',            24), ('Item Type',        14), ('Description',    28),
+        ('Status',           18), ('Payment Status',  16), ('Technician',      18),
+        ('Parts (₹)',        12), ('Labour (₹)',       12), ('Total (₹)',       13),
+        ('Invoice Amt (₹)',  14), ('Invoice #',        16), ('Payment Method',  18),
+        ('Received At',      18), ('Updated At',       18), ('Dispatch Date',  14),
+        ('Tracking #',       18), ('Courier',          16), ('Repair Findings', 30),
+        ('Notes',            30),
+    ]
+    for col_idx, (header, width) in enumerate(COLUMNS, start=1):
+        cell = ws.cell(row=3, column=col_idx, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+        ws.column_dimensions[cell.column_letter].width = width
+    ws.row_dimensions[3].height = 28
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    money_fmt = '#,##0.00'
+    for row_idx, j in enumerate(jobs, start=4):
+        fill = ALT_FILL if row_idx % 2 == 0 else None
+        status_label = STATUS_FLOW.get(j['status'], {}).get('label', j['status'] or '')
+        row_data = [
+            j['job_id'], j['customer_name'] or '', j['customer_phone'] or '',
+            j['customer_email'] or '', j['item_type'] or '', j['item_description'] or '',
+            status_label, (j['payment_status'] or 'pending').replace('_', ' ').title(),
+            j['tech_name'] or 'Unassigned',
+            j['parts_cost'] or 0, j['labour_cost'] or 0, j['total_amount'] or 0,
+            j['invoice_total_amount'] or 0, j['invoice_number'] or '',
+            (j['payment_method'] or '').replace('_', ' ').title(),
+            j['received_at'] or '', j['updated_at'] or '', j['dispatch_date'] or '',
+            j['tracking_number'] or '', j['courier_name'] or '',
+            j['repair_findings'] or '', j['notes'] or '',
+        ]
+        for col_idx, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical='center', wrap_text=True)
+            if fill:
+                cell.fill = fill
+            # Money columns: 10, 11, 12, 13
+            if col_idx in (10, 11, 12, 13) and isinstance(value, (int, float)):
+                cell.number_format = money_fmt
+                cell.font = Font(color="22C55E", bold=(col_idx == 12))
+
+        ws.row_dimensions[row_idx].height = 20
+
+    # Freeze header rows
+    ws.freeze_panes = 'A4'
+
+    # Auto-filter on header row
+    ws.auto_filter.ref = f"A3:V{max(3, len(jobs)+3)}"
+
+    # ── Save and send ──────────────────────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"maktronics_jobs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=filename)
 
 
-@app.route("/company/add-user", methods=["POST"])
-@login_required
-@owner_required
-def add_company_user():
-    company_id = get_current_company()
+@app.route('/admin/jobs/new', methods=['GET', 'POST'])
+@admin_required
+def admin_new_job():
+    if request.method == 'POST':
+        db = get_db()
+        job_id = generate_job_id()
+        barcode = job_id
+        tech_id = request.form.get('assigned_tech_id') or None
 
-    can_add, message = check_company_limit(company_id, "user")
-    if not can_add:
-        flash(message)
-        return redirect(url_for("company_settings"))
+        data = {
+            'job_id': job_id,
+            'customer_name': request.form.get('customer_name'),
+            'customer_phone': request.form.get('customer_phone'),
+            'customer_email': request.form.get('customer_email'),
+            'item_description': request.form.get('item_description'),
+            'item_type': request.form.get('item_type'),
+            'barcode': barcode,
+            'assigned_tech_id': tech_id,
+            'status': 'sent_for_inspection',
+            'notes': request.form.get('notes'),
+        }
+        db.execute("""
+            INSERT INTO jobs (job_id, customer_name, customer_phone, customer_email,
+            item_description, item_type, barcode, assigned_tech_id, status, notes)
+            VALUES (:job_id,:customer_name,:customer_phone,:customer_email,
+            :item_description,:item_type,:barcode,:assigned_tech_id,:status,:notes)
+        """, data)
 
-    email     = request.form.get("email",     "").strip().lower()
-    password  = request.form.get("password",  "")
-    full_name = request.form.get("full_name", "").strip()
-    role      = request.form.get("role",      "employee")
-    department= request.form.get("department","")
-    phone     = request.form.get("phone",     "")
+        photos = request.files.getlist('photos')
+        for photo in photos[:3]:
+            if photo and allowed_file(photo.filename):
+                filename = secure_filename(f"{job_id}_{uuid.uuid4().hex[:6]}_{photo.filename}")
+                photo.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
+                           (job_id, filename))
 
-    if CompanyUser.query.filter_by(company_id=company_id, email=email).first():
-        flash("A user with this email already exists in your company.")
-        return redirect(url_for("company_settings"))
+        log_action(db, job_id, 'Job Created & Sent for Inspection', session['user_id'],
+                   f"Customer: {data['customer_name']}")
 
-    emp_count = CompanyUser.query.count()
-    emp_id    = f"EMP{emp_count + 1:03d}"
-    new_user  = CompanyUser(
-        user_id=emp_id, company_id=company_id,
-        email=email, password_hash=hash_password(password),
-        full_name=full_name, role=role,
-        department=department, phone=phone,
-        is_active=True, created_at=date.today()
+        # Send WhatsApp notification to customer
+        job_data = dict(data)
+        send_job_created_notification(job_data)
+
+        # Notify the assigned technician
+        if tech_id:
+            tech_name = db.execute("SELECT name FROM users WHERE id=?", (tech_id,)).fetchone()
+            tech_label = tech_name['name'] if tech_name else 'Technician'
+            send_notification(
+                db, tech_id, job_id,
+                f"📦 New job {job_id} assigned to you for inspection. "
+                f"Customer: {data['customer_name']} | Item: {data['item_type']}"
+            )
+
+        db.commit()
+        flash(f'Job {job_id} created and sent for inspection! WhatsApp notification sent to customer.', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    db = get_db()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    return render_template('admin/new_job.html', technicians=technicians)
+
+@app.route('/admin/jobs/<job_id>')
+@admin_required
+def admin_job_detail(job_id):
+    db = get_db()
+    job = db.execute("""
+        SELECT j.*, u.name as tech_name FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE j.job_id=?
+    """, (job_id,)).fetchone()
+    if not job:
+        flash('Job not found', 'error')
+        return redirect(url_for('admin_jobs'))
+    photos = db.execute("SELECT * FROM job_photos WHERE job_id=?", (job_id,)).fetchall()
+    logs = db.execute("""
+        SELECT l.*, u.name as user_name FROM job_logs l
+        LEFT JOIN users u ON l.performed_by = u.id
+        WHERE l.job_id=? ORDER BY l.created_at DESC
+    """, (job_id,)).fetchall()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    return render_template('admin/job_detail.html', job=job, photos=photos,
+                           logs=logs, technicians=technicians,
+                           status_flow=STATUS_FLOW, status_order=STATUS_ORDER)
+
+# Replace the entire admin_update_job function starting from line around 850
+
+@app.route('/admin/jobs/<job_id>/update', methods=['POST'])
+@admin_required
+def admin_update_job(job_id):
+    db = get_db()
+    action = request.form.get('action')
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    tech_id = get_assigned_tech_id(db, job_id)
+
+    # ── Assign technician ────────────────────────────────────────────────────
+    if action == 'assign_tech':
+        new_tech_id = request.form.get('tech_id')
+        db.execute("UPDATE jobs SET assigned_tech_id=?, updated_at=? WHERE job_id=?",
+                   (new_tech_id, now, job_id))
+        tech = db.execute("SELECT name FROM users WHERE id=?", (new_tech_id,)).fetchone()
+        log_action(db, job_id, f'Assigned to {tech["name"]}', session['user_id'])
+        if new_tech_id:
+            send_notification(
+                db, new_tech_id, job_id,
+                f"📋 Job {job_id} has been assigned to you for inspection."
+            )
+        db.commit()
+        flash('Technician assigned!', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Approve estimate → sent_for_repair ──────────────────────────────────
+    elif action == 'approve_estimate':
+        db.execute("""
+            UPDATE jobs SET status='estimate_approved', estimate_approved_at=?, updated_at=?
+            WHERE job_id=?
+        """, (now, now, job_id))
+        log_action(db, job_id, 'Estimate Approved by Admin', session['user_id'])
+        
+        # Send WhatsApp confirmation to customer
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_approved_confirmation(dict(job))
+        
+        # Immediately move to sent_for_repair
+        db.execute("UPDATE jobs SET status='sent_for_repair', updated_at=? WHERE job_id=?",
+                   (now, job_id))
+        log_action(db, job_id, 'Status → sent_for_repair', session['user_id'])
+        
+        # Notify the two extra numbers that repair has started
+        job_for_extras = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        _send_repair_started_extra_notification(dict(job_for_extras))
+        
+        # Notify technician
+        if tech_id:
+            send_notification(
+                db, tech_id, job_id,
+                f"✅ Estimate approved for job {job_id}. Please proceed with the repair."
+            )
+        db.commit()
+        flash('Estimate approved — job sent for repair and customer notified!', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Reject estimate ──────────────────────────────────────────────────────
+    elif action == 'reject_estimate':
+        reason = request.form.get('rejection_reason', '')
+        db.execute("""
+            UPDATE jobs SET status='estimate_rejected', notes=?, updated_at=?
+            WHERE job_id=?
+        """, (reason, now, job_id))
+        log_action(db, job_id, 'Estimate Rejected by Admin', session['user_id'], reason)
+        
+        # Send WhatsApp rejection confirmation
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_rejected_confirmation(dict(job))
+        
+        if tech_id:
+            send_notification(
+                db, tech_id, job_id,
+                f"🚫 Estimate for job {job_id} was rejected by admin. Reason: {reason}"
+            )
+        db.commit()
+        flash('Estimate rejected and customer notified.', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Upload invoice + select payment method + send (unified) ─────────────
+    elif action == 'upload_invoice_and_send':
+        invoice_file = request.files.get('invoice_file')
+        invoice_number = request.form.get('invoice_number', '').strip()
+        invoice_total_amount = float(request.form.get('invoice_total_amount', 0) or 0)
+        use_razorpay = request.form.get('use_razorpay') == '1'  # checkbox: 1 if ticked
+        other_notes = request.form.get('other_payment_notes', '').strip()
+
+        if not invoice_file or not allowed_file(invoice_file.filename):
+            flash('Please upload a valid invoice file (PDF, PNG, JPG).', 'error')
+            db.commit()
+            return redirect(url_for('admin_job_detail', job_id=job_id))
+
+        if invoice_total_amount <= 0:
+            flash('Invoice amount must be greater than 0.', 'error')
+            db.commit()
+            return redirect(url_for('admin_job_detail', job_id=job_id))
+
+        # ── Save invoice file ──────────────────────────────────────────────────
+        # Use a clean filename — only preserve the file extension, not the full original name
+        _orig_ext = invoice_file.filename.rsplit('.', 1)[-1].lower() if '.' in invoice_file.filename else 'pdf'
+        filename = secure_filename(f"INV_{job_id}_{uuid.uuid4().hex[:8]}.{_orig_ext}")
+        invoice_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        invoice_url = build_public_url(f'/static/uploads/{filename}')
+
+        payment_method = 'razorpay' if use_razorpay else 'pending'
+
+        db.execute("""
+            UPDATE jobs SET
+                invoice_path=?, invoice_number=?,
+                invoice_total_amount=?, total_amount=?,
+                payment_method=?,
+                status='invoice_uploaded', updated_at=?
+            WHERE job_id=?
+        """, (filename, invoice_number, invoice_total_amount,
+              invoice_total_amount, payment_method, now, job_id))
+
+        log_action(db, job_id,
+                   f'Invoice Uploaded & Sent: {invoice_number or job_id} (₹{invoice_total_amount:.2f})',
+                   session['user_id'])
+
+        # Re-fetch job so payment_token etc. are available after update
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        job_dict = dict(job)
+
+        # ── RAZORPAY PATH: send repair_completed_invoice with payment link ─────
+        if use_razorpay:
+            amount_paise = int(invoice_total_amount * 100)
+            try:
+                order = razorpay_client.order.create({
+                    'amount': amount_paise, 'currency': 'INR', 'receipt': job_id,
+                    'notes': {'job_id': job_id, 'customer': job['customer_name'],
+                              'invoice': invoice_number or job_id}
+                })
+                token = uuid.uuid4().hex
+                pay_link = build_public_url(f'/pay/{job_id}/{token}')
+                db.execute("""
+                    UPDATE jobs SET razorpay_order_id=?, payment_token=?, payment_link=?, updated_at=?
+                    WHERE job_id=?
+                """, (order['id'], token, pay_link, now, job_id))
+                job_dict['payment_token'] = token
+                send_invoice_ready_notification(
+                    job_dict, invoice_total_amount,
+                    job['parts_cost'] or 0, job['labour_cost'] or 0,
+                    invoice_url
+                )
+                db.commit()
+                flash('✅ Invoice sent with Razorpay payment link via WhatsApp!', 'success')
+            except Exception as e:
+                db.commit()
+                flash(f'Invoice saved but Razorpay error: {str(e)}', 'error')
+            return redirect(url_for('admin_job_detail', job_id=job_id))
+
+        # ── NON-RAZORPAY PATH: send invoice first, then redirect to payment step
+        # Invoice WhatsApp is sent immediately; payment method is collected next
+        send_invoice_ready_notification_non_razorpay(
+            job_dict, invoice_total_amount,
+            job['parts_cost'] or 0, job['labour_cost'] or 0,
+            'Other',  # generic label — payment method confirmed in next step
+            invoice_url
+        )
+        log_action(db, job_id, 'Invoice Sent via WhatsApp (non-Razorpay) — awaiting payment method', session['user_id'])
+        db.commit()
+        # Redirect back with flag to open the payment method modal
+        flash('✅ Invoice sent via WhatsApp! Now select the payment method below.', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id) + '?open_payment_modal=1')
+
+    # ── Step 2 (non-Razorpay): confirm payment method after invoice is sent ──
+    elif action == 'confirm_payment_method':
+        payment_method = request.form.get('payment_method', '')
+        payment_reference = request.form.get('payment_reference', '').strip()
+        other_notes = request.form.get('other_payment_notes', '').strip()
+        invoice_total_amount = float(
+            db.execute("SELECT invoice_total_amount FROM jobs WHERE job_id=?", (job_id,)).fetchone()[0] or 0
+        )
+
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        job_dict = dict(job)
+
+        if payment_method == 'cash_cheque':
+            # Mark paid and send payment_received only if reference number entered
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                payment_method='cash_cheque', status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, f'Payment Method: Cash / Cheque — Ref: {payment_reference or "N/A"}', session['user_id'])
+            if payment_reference:
+                send_payment_received_confirmation(job_dict, invoice_total_amount, payment_reference)
+                flash('✅ Payment marked received and customer notified via WhatsApp (Cash / Cheque).', 'success')
+            else:
+                flash('✅ Payment marked as Cash / Cheque (no reference — WhatsApp not sent).', 'success')
+
+        elif payment_method == 'pay_later':
+            db.execute("""
+                UPDATE jobs SET payment_method='pay_later', status='invoice_uploaded', updated_at=? WHERE job_id=?
+            """, (now, job_id))
+            log_action(db, job_id, 'Payment Method: Pay Later — no payment message sent', session['user_id'])
+            flash('✅ Marked as Pay Later. No payment message sent.', 'success')
+
+        elif payment_method == 'free_of_charge':
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                payment_method='free_of_charge', status='payment_received', updated_at=? WHERE job_id=?
+            """, (now, now, job_id))
+            log_action(db, job_id, 'Free of Charge — Payment Waived', session['user_id'])
+            flash('✅ Marked Free of Charge. No payment message sent.', 'success')
+
+        elif payment_method == 'other':
+            db.execute("""
+                UPDATE jobs SET payment_method='other', status='invoice_uploaded', updated_at=? WHERE job_id=?
+            """, (now, job_id))
+            log_action(db, job_id, f'Payment Method: Other — {other_notes or "No notes"}', session['user_id'])
+            flash('✅ Invoice sent. No payment message sent for "Other" arrangement.', 'success')
+
+        else:
+            flash('Please select a valid payment method.', 'error')
+
+        db.commit()
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Manual payment received ──────────────────────────────────────────────
+    elif action == 'payment_received':
+        db.execute("""
+            UPDATE jobs SET payment_status='paid', payment_received_at=?,
+            status='payment_received', updated_at=? WHERE job_id=?
+        """, (now, now, job_id))
+        log_action(db, job_id, 'Payment Received (Manual)', session['user_id'])
+        
+        # Send WhatsApp payment confirmation
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        payment_method = job.get('payment_method', 'manual').upper()
+        send_payment_received_confirmation(
+            dict(job),
+            job['total_amount'] or 0,
+            f'MANUAL-{payment_method}'   # e.g. "MANUAL-CASH_CHEQUE"
+        )
+        
+        db.commit()
+        flash('Payment marked as received and customer notified!', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Dispatch ─────────────────────────────────────────────────────────────
+    elif action == 'dispatch':
+        tracking = request.form.get('tracking_number')
+        courier_name = request.form.get('courier_name')
+        dispatch_date = request.form.get('dispatch_date')
+        expected = request.form.get('expected_delivery')
+
+        # ✅ Save the courier receipt file
+        receipt_file = request.files.get('courier_receipt')
+        receipt_path = None
+        receipt_public_url = None
+
+        if receipt_file and receipt_file.filename:
+            ext = secure_filename(receipt_file.filename).rsplit('.', 1)[-1].lower()
+            filename = f"lr_{job_id}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            receipt_file.save(save_path)
+            receipt_path = filename
+            receipt_public_url = build_public_url(f'/static/uploads/{filename}')
+
+        db.execute("""
+            UPDATE jobs SET status='dispatched', tracking_number=?, courier_name=?,
+            dispatch_date=?, expected_delivery=?, courier_receipt_path=?, updated_at=?
+            WHERE job_id=?
+        """, (tracking, courier_name, dispatch_date, expected, receipt_path, now, job_id))
+        log_action(db, job_id, 'Dispatched', session['user_id'],
+                   f'Courier: {courier_name}, Tracking: {tracking}')
+
+        db.commit()  # ✅ commit before fetching
+
+        # ✅ Send dispatch WhatsApp with receipt as media
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_dispatched_notification(dict(job), courier_name, tracking, expected, receipt_public_url)
+
+        # ── Auto-close: move to 'closed' immediately after dispatch ─────────
+        db.execute("UPDATE jobs SET status='closed', updated_at=? WHERE job_id=?", (now, job_id))
+        log_action(db, job_id, 'Job Auto-Closed after Dispatch', session['user_id'])
+        db.commit()
+
+        # Wait 10 seconds so the two WhatsApp messages don't arrive simultaneously
+        time.sleep(10)
+
+        # Send Job Closed notification to customer + both extra numbers
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_job_closed_notification(dict(job))
+
+        flash('Job dispatched and auto-closed! Customer notified via WhatsApp. 🚚🔒', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Close job ────────────────────────────────────────────────────────────
+    elif action == 'close':
+        db.execute("UPDATE jobs SET status='closed', updated_at=? WHERE job_id=?", (now, job_id))
+        log_action(db, job_id, 'Job Closed', session['user_id'])
+        db.commit()
+        # Send Job Closed notification to customer + both extra numbers
+        job_closed = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        if job_closed:
+            send_job_closed_notification(dict(job_closed))
+        flash('Job closed and customer notified via WhatsApp! 🔒', 'success')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    db.commit()
+    flash('Job updated successfully!', 'success')
+    return redirect(url_for('admin_job_detail', job_id=job_id))
+    
+
+@app.route('/admin/jobs/<job_id>/delete', methods=['POST'])
+@admin_required
+def admin_delete_job(job_id):
+    db = get_db()
+    db.execute("DELETE FROM job_photos WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM notifications WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+    db.commit()
+    flash(f'Job {job_id} deleted.', 'success')
+    return redirect(url_for('admin_jobs'))
+
+# ─── USER MANAGEMENT (Admin only) ────────────────────────────────────────────
+ALL_PERMISSIONS = {
+    'view_all_jobs':   'View All Jobs',
+    'create_jobs':     'Create Jobs',
+    'edit_jobs':       'Edit Jobs',
+    'delete_jobs':     'Delete Jobs',
+    'upload_invoice':  'Upload Invoice',
+    'manage_payments': 'Manage Payments',
+    'dispatch_jobs':   'Dispatch Jobs',
+    'view_reports':    'View Reports',
+    'manage_users':    'Manage Users',
+    'export_data':     'Export Data',
+}
+
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    db = get_db()
+    rows = db.execute("""
+        SELECT u.*, COUNT(j.id) AS job_count
+        FROM users u
+        LEFT JOIN jobs j ON j.assigned_tech_id = u.id
+        GROUP BY u.id
+        ORDER BY u.role, u.name
+    """).fetchall()
+    users = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d['perms'] = json.loads(r['permissions'] or '{}')
+        except Exception:
+            d['perms'] = {}
+        users.append(d)
+    return render_template('admin/users.html', users=users, all_permissions=ALL_PERMISSIONS)
+
+@app.route('/admin/users/add', methods=['POST'])
+@admin_required
+def admin_add_user():
+    username = request.form.get('username', '').strip()
+    password = request.form.get('password', '').strip()
+    name     = request.form.get('name', '').strip()
+    role     = request.form.get('role', 'technician')
+
+    if not username or not password or not name:
+        flash('Username, password and name are required.', 'error')
+        return redirect(url_for('admin_users'))
+
+    db = get_db()
+    if db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone():
+        flash(f'Username "{username}" is already taken.', 'error')
+        return redirect(url_for('admin_users'))
+
+    perms = {k: True for k in ALL_PERMISSIONS if request.form.get(k)}
+    db.execute(
+        "INSERT INTO users (username, password, role, name, permissions) VALUES (?,?,?,?,?)",
+        (username, generate_password_hash(password), role, name, json.dumps(perms))
     )
-    db.session.add(new_user)
-    db.session.commit()
-    flash(f"User '{full_name}' added successfully.")
-    return redirect(url_for("company_settings"))
+    db.commit()
+    flash(f'User "{name}" created successfully!', 'success')
+    return redirect(url_for('admin_users'))
 
+@app.route('/admin/users/delete/<int:user_id>', methods=['POST'])
+@admin_required
+def admin_delete_user(user_id):
+    if user_id == session['user_id']:
+        flash("You can't delete your own account.", 'error')
+        return redirect(url_for('admin_users'))
+    db = get_db()
+    user = db.execute("SELECT name FROM users WHERE id=?", (user_id,)).fetchone()
+    if user:
+        db.execute("DELETE FROM users WHERE id=?", (user_id,))
+        db.commit()
+        flash(f'User "{user["name"]}" deleted.', 'success')
+    return redirect(url_for('admin_users'))
 
-@app.route("/company/remove-user/<user_id>")
+@app.route('/admin/users/permissions/<int:user_id>', methods=['POST'])
+@admin_required
+def admin_save_permissions(user_id):
+    perms = {k: True for k in ALL_PERMISSIONS if request.form.get(k)}
+    db = get_db()
+    db.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps(perms), user_id))
+    db.commit()
+    flash('Permissions saved successfully.', 'success')
+    return redirect(url_for('admin_users'))
+
+# ─── BACKUP & RESTORE (Admin only) ───────────────────────────────────────────
+import zipfile, shutil, tempfile
+
+@app.route('/admin/backup')
+@admin_required
+def admin_backup_page():
+    """Admin-only backup & restore page."""
+    return render_template('admin/backup.html')
+
+@app.route('/admin/backup/download')
+@admin_required
+def admin_backup_download():
+    """Create and stream a ZIP backup of the database + uploads folder."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    zip_name = f'maktronics_backup_{ts}.zip'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Database
+        if os.path.exists(DB_PATH):
+            zf.write(DB_PATH, 'maktronics.db')
+        # Uploads folder
+        upload_dir = app.config['UPLOAD_FOLDER']
+        if os.path.exists(upload_dir):
+            for root, dirs, files in os.walk(upload_dir):
+                for file in files:
+                    abs_path = os.path.join(root, file)
+                    arc_name = os.path.relpath(abs_path, start=os.path.dirname(upload_dir))
+                    zf.write(abs_path, arc_name)
+    buf.seek(0)
+    return send_file(buf, mimetype='application/zip',
+                     as_attachment=True, download_name=zip_name)
+
+@app.route('/admin/backup/restore', methods=['POST'])
+@admin_required
+def admin_backup_restore():
+    """Restore database from an uploaded ZIP backup."""
+    f = request.files.get('backup_file')
+    if not f or not f.filename.endswith('.zip'):
+        flash('Please upload a valid .zip backup file.', 'error')
+        return redirect(url_for('admin_backup_page'))
+
+    try:
+        buf = io.BytesIO(f.read())
+        with zipfile.ZipFile(buf, 'r') as zf:
+            names = zf.namelist()
+            if 'maktronics.db' not in names:
+                flash('Invalid backup: maktronics.db not found inside ZIP.', 'error')
+                return redirect(url_for('admin_backup_page'))
+
+            # Backup current DB before overwriting
+            if os.path.exists(DB_PATH):
+                ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                shutil.copy2(DB_PATH, f'{DB_PATH}.pre_restore_{ts}.bak')
+
+            # Restore DB
+            with zf.open('maktronics.db') as src:
+                with open(DB_PATH, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
+            # Restore uploads (optional — only if they're in the ZIP)
+            upload_dir = app.config['UPLOAD_FOLDER']
+            for name in names:
+                if name.startswith('static/uploads/') and not name.endswith('/'):
+                    dest = os.path.join(os.path.dirname(upload_dir),
+                                        *name.split('/')[1:])  # strip 'static/'
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with zf.open(name) as src, open(dest, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+
+        flash('✅ Backup restored successfully! The database has been replaced.', 'success')
+    except Exception as e:
+        flash(f'Restore failed: {str(e)}', 'error')
+    return redirect(url_for('admin_backup_page'))
+
+# ─── TECHNICIAN ROUTES ────────────────────────────────────────────────────────
+@app.route('/tech')
 @login_required
-@owner_required
-def remove_company_user(user_id):
-    company_id = get_current_company()
-    user = CompanyUser.query.filter_by(user_id=user_id, company_id=company_id).first()
-    if user and user.role != "owner":
-        user.is_active = False
-        db.session.commit()
-        flash("User removed successfully.")
+def tech_dashboard():
+    db = get_db()
+    tech_id = session['user_id']
+    stats = {
+        'total':        db.execute("SELECT COUNT(*) FROM jobs WHERE assigned_tech_id=?", (tech_id,)).fetchone()[0],
+        'sent_for_repair': db.execute("SELECT COUNT(*) FROM jobs WHERE assigned_tech_id=? AND status='sent_for_repair'", (tech_id,)).fetchone()[0],
+        'repair_done':  db.execute("SELECT COUNT(*) FROM jobs WHERE assigned_tech_id=? AND status='repair_done'", (tech_id,)).fetchone()[0],
+        'closed':       db.execute("SELECT COUNT(*) FROM jobs WHERE assigned_tech_id=? AND status='closed'", (tech_id,)).fetchone()[0],
+    }
+    my_jobs = db.execute("""
+        SELECT * FROM jobs WHERE assigned_tech_id=? ORDER BY received_at DESC LIMIT 10
+    """, (tech_id,)).fetchall()
+    return render_template('technician/dashboard.html', stats=stats, jobs=my_jobs,
+                           status_flow=STATUS_FLOW)
+
+@app.route('/tech/jobs')
+@login_required
+def tech_jobs():
+    db = get_db()
+    tech_id = session['user_id']
+    status_filter = request.args.get('status', '')
+    search = request.args.get('search', '')
+    query = "SELECT * FROM jobs WHERE assigned_tech_id=?"
+    params = [tech_id]
+    if status_filter:
+        query += " AND status=?"
+        params.append(status_filter)
+    if search:
+        query += " AND (job_id LIKE ? OR barcode LIKE ? OR customer_name LIKE ?)"
+        params.extend([f'%{search}%', f'%{search}%', f'%{search}%'])
+    query += " ORDER BY received_at DESC"
+    jobs = db.execute(query, params).fetchall()
+    return render_template('technician/jobs.html', jobs=jobs, status_flow=STATUS_FLOW,
+                           status_filter=status_filter, search=search)
+
+@app.route('/tech/jobs/<job_id>')
+@login_required
+def tech_job_detail(job_id):
+    db = get_db()
+    tech_id = session['user_id']
+    if session['role'] == 'admin':
+        job = db.execute(
+            "SELECT j.*, u.name as tech_name FROM jobs j LEFT JOIN users u ON j.assigned_tech_id=u.id WHERE j.job_id=?",
+            (job_id,)
+        ).fetchone()
     else:
-        flash("Cannot remove this user.")
-    return redirect(url_for("company_settings"))
+        job = db.execute(
+            "SELECT * FROM jobs WHERE job_id=? AND assigned_tech_id=?", (job_id, tech_id)
+        ).fetchone()
+    if not job:
+        flash('Job not found or not assigned to you', 'error')
+        return redirect(url_for('tech_jobs'))
+    photos = db.execute("SELECT * FROM job_photos WHERE job_id=?", (job_id,)).fetchall()
+    logs = db.execute("""
+        SELECT l.*, u.name as user_name FROM job_logs l
+        LEFT JOIN users u ON l.performed_by=u.id
+        WHERE l.job_id=? ORDER BY l.created_at DESC
+    """, (job_id,)).fetchall()
+    return render_template('technician/job_detail.html', job=job, photos=photos,
+                           logs=logs, status_flow=STATUS_FLOW, status_order=STATUS_ORDER)
 
-
-@app.route("/company/upgrade-plan", methods=["POST"])
+@app.route('/tech/jobs/<job_id>/update', methods=['POST'])
 @login_required
-@owner_required
-def upgrade_plan():
-    company_id = get_current_company()
-    company    = get_company_by_id(company_id)
-    new_plan   = request.form.get("plan")
-    plan       = SubscriptionPlan.query.get(new_plan)
-    if company and plan:
-        company.subscription_plan     = new_plan
-        company.max_users_per_company = plan.max_users
-        company.max_companies_allowed = plan.max_companies
-        db.session.commit()
-        flash(f"Plan upgraded to {plan.name} successfully!")
+def tech_update_job(job_id):
+    db = get_db()
+    tech_id = session['user_id']
+    action = request.form.get('action')
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # Ensure technician owns this job
+    if session['role'] != 'admin':
+        job = db.execute(
+            "SELECT * FROM jobs WHERE job_id=? AND assigned_tech_id=?", (job_id, tech_id)
+        ).fetchone()
+        if not job:
+            flash('Access denied', 'error')
+            return redirect(url_for('tech_jobs'))
+
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+    # ── Mark not repairable ──────────────────────────────────────────────────
+    if action == 'not_repairable':
+        reason = request.form.get('not_repairable_reason', '')
+        findings = request.form.get('inspection_findings', '')
+        db.execute("""
+            UPDATE jobs SET status='not_repairable', inspection_findings=?,
+            not_repairable_reason=?, updated_at=? WHERE job_id=?
+        """, (findings, reason, now, job_id))
+        log_action(db, job_id, 'Marked Not Repairable', tech_id, reason)
+        
+        # Send WhatsApp notification to customer
+        send_not_repairable_notification(dict(job), reason)
+        
+        notify_all_admins(
+            db, job_id,
+            f"❌ Job {job_id} marked NOT REPAIRABLE by {session['name']}. "
+            f"Reason: {reason}"
+        )
+
+    # ── Send estimate ────────────────────────────────────────────────────────
+    elif action == 'send_estimate':
+        estimate_amount = float(request.form.get('estimate_amount', 0))
+        parts_cost = float(request.form.get('parts_cost', 0))
+        labour_cost = float(request.form.get('labour_cost', 0))
+        estimate_notes = request.form.get('estimate_notes', '')
+        findings = request.form.get('inspection_findings', '')
+        db.execute("""
+            UPDATE jobs SET status='estimate_sent', inspection_findings=?,
+            estimate_amount=?, parts_cost=?, labour_cost=?,
+            estimate_notes=?, estimate_sent_at=?, updated_at=?
+            WHERE job_id=?
+        """, (findings, estimate_amount, parts_cost, labour_cost, estimate_notes, now, now, job_id))
+        log_action(db, job_id, f'Estimate Sent: ₹{estimate_amount}', tech_id, estimate_notes)
+
+        # Re-fetch job AFTER update so dict has fresh data
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+        # Send WhatsApp estimate for customer approval
+        result = send_estimate_notification(
+            dict(job),
+            float(job['estimate_amount'] or 0),
+            float(job['parts_cost'] or 0),
+            float(job['labour_cost'] or 0)
+        )
+        print(f"[WhatsApp Estimate] result: {result}")
+
+        notify_all_admins(
+            db, job_id,
+            f"📄 Technician {session['name']} sent estimate ₹{estimate_amount:.2f} "
+            f"for job {job_id}. Customer will approve via WhatsApp."
+        )
+
+    # ── Repair done ──────────────────────────────────────────────────────────
+    elif action == 'repair_done':
+        findings = request.form.get('repair_findings', '')
+        parts = float(request.form.get('parts_cost', 0))
+        labour = float(request.form.get('labour_cost', 0))
+        total = parts + labour
+        db.execute("""
+            UPDATE jobs SET status='repair_done', repair_findings=?,
+            parts_cost=?, labour_cost=?, total_amount=?, updated_at=?
+            WHERE job_id=?
+        """, (findings, parts, labour, total, now, job_id))
+        log_action(db, job_id, 'Repair Done', tech_id,
+                   f'Findings: {findings} | Total: ₹{total}')
+
+        # Re-fetch job after update for accurate data
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+
+        # Notify accounts department to generate invoice
+        accounts_result = send_accounts_department_notification(dict(job), total, parts, labour, session.get('name', 'Technician'))
+        if accounts_result.get('success'):
+            print(f"[Accounts] Invoice request sent to accounts for job {job_id}")
+        else:
+            print(f"[Accounts] Failed to notify accounts for job {job_id}: {accounts_result.get('error')}")
+
+        notify_all_admins(
+            db, job_id,
+            f"✅ Repair completed for job {job_id} by {session['name']}. "
+            f"Total: ₹{total:.2f}. Accounts department notified to generate invoice."
+        )
+
+    # ── Add photo ────────────────────────────────────────────────────────────
+    elif action == 'add_photo':
+        photos = request.files.getlist('photos')
+        for photo in photos[:3]:
+            if photo and allowed_file(photo.filename):
+                filename = secure_filename(f"{job_id}_{uuid.uuid4().hex[:6]}_{photo.filename}")
+                photo.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
+                           (job_id, filename))
+        log_action(db, job_id, 'Photos Added', tech_id)
+
+    # ── Progress note ────────────────────────────────────────────────────────
+    elif action == 'update_progress':
+        notes = request.form.get('notes')
+        db.execute("UPDATE jobs SET notes=?, updated_at=? WHERE job_id=?", (notes, now, job_id))
+        log_action(db, job_id, 'Progress Note Added', tech_id, notes)
+
+    db.commit()
+    flash('Job updated!', 'success')
+    return redirect(url_for('tech_job_detail', job_id=job_id))
+
+# ─── BARCODE SCANNER ──────────────────────────────────────────────────────────
+@app.route('/scanner')
+@login_required
+def scanner():
+    return render_template('shared/scanner.html')
+
+@app.route('/api/scan', methods=['GET'])
+@login_required
+def api_scan():
+    code = request.args.get('code', '').strip()
+    if not code:
+        return jsonify({'found': False, 'error': 'No code provided'}), 400
+    db = get_db()
+    job = db.execute(
+        "SELECT job_id FROM jobs WHERE job_id=? OR barcode=?", (code, code)
+    ).fetchone()
+    if not job:
+        return jsonify({'found': False, 'error': f'No job found for: {code}'}), 404
+    role = session.get('role')
+    if role in ('admin', 'manager'):
+        url = url_for('admin_job_detail', job_id=job['job_id'])
     else:
-        flash("Invalid plan selected.")
-    return redirect(url_for("company_settings"))
+        url = url_for('tech_job_detail', job_id=job['job_id'])
+    return jsonify({'found': True, 'job_id': job['job_id'], 'redirect': url})
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ── DEBTORS & CREDITORS ───────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-#
-#  Debtors  = Clients who OWE you money  (Sales Invoices with balance > 0)
-#  Creditors= Suppliers you OWE money to (Purchase Invoices with balance > 0)
-#
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── CUSTOMER PAYMENT PAGE ────────────────────────────────────────────────────
+@app.route('/pay/<job_id>/<token>')
+def customer_pay(job_id, token):
+    db = get_db()
+    job = db.execute(
+        "SELECT * FROM jobs WHERE job_id=? AND payment_token=?", (job_id, token)
+    ).fetchone()
+    if not job:
+        return "Invalid or expired payment link.", 404
+    if job['payment_status'] == 'paid':
+        return render_template('shared/payment_success.html', job=job, already_paid=True)
+    amount = float(job['invoice_total_amount'] or job['total_amount'] or 0)
+    return render_template('shared/customer_payment.html', job=job, amount=amount,
+                           razorpay_key=RAZORPAY_KEY_ID)
 
-def _debtor_summary(company_id):
-    """
-    For every client that has at least one outstanding sales invoice,
-    return a summary dict with the key financial fields.
-    """
-    clients = Client.query.filter_by(company_id=company_id).all()
-    today   = date.today()
-    rows    = []
+@app.route('/pay/<job_id>/verify', methods=['POST'])
+def verify_payment(job_id):
+    db = get_db()
+    data = request.get_json() or request.form.to_dict()
+    razorpay_order_id   = data.get('razorpay_order_id', '')
+    razorpay_payment_id = data.get('razorpay_payment_id', '')
+    razorpay_signature  = data.get('razorpay_signature', '')
 
-    for c in clients:
-        invoices = (Invoice.query
-                    .filter_by(company_id=company_id, client_id=c.id)
-                    .order_by(Invoice.date.desc())
-                    .all())
-        if not invoices:
-            continue
+    body = f"{razorpay_order_id}|{razorpay_payment_id}".encode()
+    expected_sig = hmac.new(RAZORPAY_KEY_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_sig, razorpay_signature):
+        return jsonify({'status': 'error', 'message': 'Signature mismatch'}), 400
 
-        total_pending = sum(getattr(i, "balance", 0) or 0 for i in invoices)
-        if total_pending <= 0:
-            continue  # fully settled – skip
-
-        last_invoice_date = invoices[0].date  # already desc sorted
-
-        # nearest due invoice (unpaid, due_date set)
-        unpaid       = [i for i in invoices if (getattr(i, "balance", 0) or 0) > 0]
-        due_invoices = [i for i in unpaid if getattr(i, "due_date", None)]
-        if due_invoices:
-            future  = [i for i in due_invoices if i.due_date >= today]
-            nearest = min(future, key=lambda i: i.due_date) if future else \
-                      max(due_invoices, key=lambda i: i.due_date)
-            nearest_due_date = nearest.due_date
-            nearest_due_amt  = getattr(nearest, "balance", 0) or 0
-        else:
-            nearest_due_date = None
-            nearest_due_amt  = None
-
-        # last payment: invoice with highest amount paid
-        paid_invoices = [i for i in invoices
-                         if (i.grand_total - (getattr(i, "balance", 0) or 0)) > 0]
-        if paid_invoices:
-            last_paid_inv     = max(paid_invoices, key=lambda i: i.date)
-            last_payment_date = last_paid_inv.date
-            last_payment_amt  = last_paid_inv.grand_total - (getattr(last_paid_inv, "balance", 0) or 0)
-        else:
-            last_payment_date = None
-            last_payment_amt  = None
-
-        rows.append({
-            "id":                c.id,
-            "name":              c.name,
-            "phone":             c.phone or "",
-            "city":              c.city or "",
-            "total_pending":     total_pending,
-            "last_invoice_date": last_invoice_date,
-            "nearest_due_date":  nearest_due_date,
-            "nearest_due_amt":   nearest_due_amt,
-            "last_payment_date": last_payment_date,
-            "last_payment_amt":  last_payment_amt,
-            "invoice_count":     len(invoices),
-            "overdue":           nearest_due_date is not None and nearest_due_date < today,
-        })
-
-    rows.sort(key=lambda r: r["total_pending"], reverse=True)
-    return rows
-
-
-def _creditor_summary(company_id):
-    """
-    For every supplier that has at least one outstanding purchase invoice.
-    """
-    suppliers = Client.query.filter(
-        Client.company_id == company_id,
-        db.or_(Client.client_type == "Supplier", Client.client_type == "Both")
-    ).all()
-
-    today = date.today()
-    rows  = []
-
-    for s in suppliers:
-        invoices = (PurchaseInvoice.query
-                    .filter_by(company_id=company_id, supplier_id=s.id)
-                    .order_by(PurchaseInvoice.date.desc())
-                    .all())
-        if not invoices:
-            continue
-
-        total_pending = sum(i.balance or 0 for i in invoices)
-        if total_pending <= 0:
-            continue
-
-        last_bill_date = invoices[0].date
-
-        unpaid       = [i for i in invoices if (i.balance or 0) > 0]
-        due_invoices = [i for i in unpaid if i.due_date]
-        if due_invoices:
-            future  = [i for i in due_invoices if i.due_date >= today]
-            nearest = min(future, key=lambda i: i.due_date) if future else \
-                      max(due_invoices, key=lambda i: i.due_date)
-            nearest_due_date = nearest.due_date
-            nearest_due_amt  = nearest.balance or 0
-        else:
-            nearest_due_date = None
-            nearest_due_amt  = None
-
-        paid_invs = [i for i in invoices if (i.paid_amount or 0) > 0]
-        if paid_invs:
-            last_paid_inv     = max(paid_invs, key=lambda i: i.date)
-            last_payment_date = last_paid_inv.date
-            last_payment_amt  = last_paid_inv.paid_amount or 0
-        else:
-            last_payment_date = None
-            last_payment_amt  = None
-
-        rows.append({
-            "id":                s.id,
-            "name":              s.name,
-            "phone":             s.phone or "",
-            "city":              s.city or "",
-            "total_pending":     total_pending,
-            "last_bill_date":    last_bill_date,
-            "nearest_due_date":  nearest_due_date,
-            "nearest_due_amt":   nearest_due_amt,
-            "last_payment_date": last_payment_date,
-            "last_payment_amt":  last_payment_amt,
-            "invoice_count":     len(invoices),
-            "overdue":           nearest_due_date is not None and nearest_due_date < today,
-        })
-
-    rows.sort(key=lambda r: r["total_pending"], reverse=True)
-    return rows
-
-
-@app.route("/debtors")
-@login_required
-def debtors_list():
-    company_id        = get_current_company()
-    debtors           = _debtor_summary(company_id)
-    total_outstanding = sum(d["total_pending"] for d in debtors)
-    overdue_count     = sum(1 for d in debtors if d["overdue"])
-    return render_template("debtors.html",
-                           debtors=debtors,
-                           total_outstanding=total_outstanding,
-                           overdue_count=overdue_count)
-
-
-@app.route("/creditors")
-@login_required
-def creditors_list():
-    company_id    = get_current_company()
-    creditors     = _creditor_summary(company_id)
-    total_payable = sum(c["total_pending"] for c in creditors)
-    overdue_count = sum(1 for c in creditors if c["overdue"])
-    return render_template("creditors.html",
-                           creditors=creditors,
-                           total_payable=total_payable,
-                           overdue_count=overdue_count)
-
-
-@app.route("/debtors/<int:client_pk>/statement")
-@login_required
-def debtor_statement(client_pk):
-    company_id = get_current_company()
-    c          = Client.query.filter_by(id=client_pk, company_id=company_id).first_or_404()
-
-    invoices = (Invoice.query
-                .filter_by(company_id=company_id, client_id=c.id)
-                .order_by(Invoice.date.asc())
-                .all())
-
-    ledger          = []
-    running_balance = c.opening_balance or 0.0
-
-    if running_balance:
-        ledger.append({
-            "date":    c.created_at or date.today(),
-            "type":    "Opening Balance",
-            "ref":     "—",
-            "debit":   running_balance,
-            "credit":  0,
-            "balance": running_balance,
-            "status":  "",
-            "id":      None,
-        })
-
-    for inv in invoices:
-        running_balance += inv.grand_total
-        ledger.append({
-            "date":    inv.date,
-            "type":    "Invoice",
-            "ref":     inv.invoice_id,
-            "debit":   inv.grand_total,
-            "credit":  0,
-            "balance": running_balance,
-            "status":  inv.status,
-            "id":      inv.invoice_id,
-        })
-        paid = inv.grand_total - (getattr(inv, "balance", 0) or 0)
-        if paid > 0:
-            running_balance -= paid
-            ledger.append({
-                "date":    inv.date,
-                "type":    "Payment Received",
-                "ref":     inv.invoice_id,
-                "debit":   0,
-                "credit":  paid,
-                "balance": running_balance,
-                "status":  "",
-                "id":      inv.invoice_id,
-            })
-
-    total_debit  = sum(r["debit"]  for r in ledger)
-    total_credit = sum(r["credit"] for r in ledger)
-
-    return render_template("ledger_statement.html",
-                           entity=_normalize_client(c),
-                           ledger=ledger,
-                           total_debit=total_debit,
-                           total_credit=total_credit,
-                           closing_balance=running_balance,
-                           mode="debtor",
-                           back_url="/debtors",
-                           today=date.today().strftime("%d %b %Y"))
-
-
-@app.route("/creditors/<int:supplier_pk>/statement")
-@login_required
-def creditor_statement(supplier_pk):
-    company_id = get_current_company()
-    s          = Client.query.filter_by(id=supplier_pk, company_id=company_id).first_or_404()
-
-    invoices = (PurchaseInvoice.query
-                .filter_by(company_id=company_id, supplier_id=s.id)
-                .order_by(PurchaseInvoice.date.asc())
-                .all())
-
-    ledger          = []
-    running_balance = s.opening_balance or 0.0
-
-    if running_balance:
-        ledger.append({
-            "date":    s.created_at or date.today(),
-            "type":    "Opening Balance",
-            "ref":     "—",
-            "debit":   0,
-            "credit":  running_balance,
-            "balance": running_balance,
-            "status":  "",
-            "id":      None,
-            "inv_id":  None,
-        })
-
-    for inv in invoices:
-        running_balance += inv.grand_total
-        ledger.append({
-            "date":    inv.date,
-            "type":    "Purchase Invoice",
-            "ref":     inv.invoice_number or inv.invoice_id,
-            "debit":   0,
-            "credit":  inv.grand_total,
-            "balance": running_balance,
-            "status":  inv.status,
-            "id":      inv.id,
-            "inv_id":  inv.invoice_id,
-        })
-        if inv.paid_amount and inv.paid_amount > 0:
-            running_balance -= inv.paid_amount
-            ledger.append({
-                "date":    inv.date,
-                "type":    "Payment Made",
-                "ref":     inv.invoice_number or inv.invoice_id,
-                "debit":   inv.paid_amount,
-                "credit":  0,
-                "balance": running_balance,
-                "status":  "",
-                "id":      inv.id,
-                "inv_id":  inv.invoice_id,
-            })
-
-    total_debit  = sum(r["debit"]  for r in ledger)
-    total_credit = sum(r["credit"] for r in ledger)
-
-    return render_template("ledger_statement.html",
-                           entity=_normalize_client(s),
-                           ledger=ledger,
-                           total_debit=total_debit,
-                           total_credit=total_credit,
-                           closing_balance=running_balance,
-                           mode="creditor",
-                           back_url="/creditors",
-                           today=date.today().strftime("%d %b %Y"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── Receipts & Payments ───────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _outstanding_invoices_for_client(company_id, client_id):
-    """Return list of dicts for invoices with a remaining balance for a client."""
-    invs = (Invoice.query
-            .filter_by(company_id=company_id, client_id=client_id)
-            .filter(Invoice.status.in_(["Draft", "Partial"]))
-            .order_by(Invoice.date.asc())
-            .all())
-    result = []
-    for inv in invs:
-        total   = inv.grand_total or 0
-        balance = getattr(inv, "balance", None)
-        if balance is None:
-            balance = total if inv.status != "Paid" else 0
-        if balance > 0:
-            result.append({
-                "id":      inv.id,
-                "ref":     inv.invoice_id,
-                "date":    inv.date.strftime("%d %b %Y") if inv.date else "",
-                "total":   total,
-                "balance": balance,
-            })
-    return result
-
-
-def _outstanding_invoices_for_supplier(company_id, supplier_id):
-    """Return list of dicts for purchase invoices with a remaining balance."""
-    invs = (PurchaseInvoice.query
-            .filter_by(company_id=company_id, supplier_id=supplier_id)
-            .filter(PurchaseInvoice.status.in_(["Pending", "Partial"]))
-            .order_by(PurchaseInvoice.date.asc())
-            .all())
-    result = []
-    for inv in invs:
-        total   = inv.grand_total or 0
-        balance = inv.balance or total
-        if balance > 0:
-            result.append({
-                "id":      inv.id,
-                "ref":     inv.invoice_number or inv.invoice_id,
-                "date":    inv.date.strftime("%d %b %Y") if inv.date else "",
-                "total":   total,
-                "balance": balance,
-            })
-    return result
-
-
-def _build_invoices_json(company_id, entities, fetch_fn):
-    """Build {entity_id: [invoice list]} dict for JS."""
-    data = {}
-    for e in entities:
-        data[str(e.id)] = fetch_fn(company_id, e.id)
-    return json.dumps(data)
-
-
-@app.route("/receipts/new")
-@login_required
-def receipt_new():
-    company_id    = get_current_company()
-    all_clients   = Client.query.filter_by(company_id=company_id).order_by(Client.name).all()
-    selected_id   = request.args.get("client_id", type=int)
-    invoices_json = _build_invoices_json(company_id, all_clients,
-                                         _outstanding_invoices_for_client)
-    return render_template(
-        "receipt_payment.html",
-        mode="receipt",
-        entities=all_clients,
-        invoices_json=invoices_json,
-        selected_id=selected_id,
-        today=str(date.today()),
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    db.execute("""
+        UPDATE jobs SET payment_status='paid', payment_received_at=?,
+        razorpay_payment_id=?, status='payment_received', updated_at=?
+        WHERE job_id=?
+    """, (now, razorpay_payment_id, now, job_id))
+    db.execute(
+        "INSERT INTO job_logs (job_id, action, performed_by, details) VALUES (?,?,?,?)",
+        (job_id, 'Payment Received via Razorpay', None,
+         f'Payment ID: {razorpay_payment_id}, Order: {razorpay_order_id}')
     )
+    
+    # Send WhatsApp payment confirmation
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    send_payment_received_confirmation(dict(job), job['total_amount'] or 0, razorpay_payment_id)
+    
+    db.commit()
+    return jsonify({'status': 'success', 'redirect': url_for('payment_success', job_id=job_id)})
 
+@app.route('/pay/<job_id>/success')
+def payment_success(job_id):
+    db = get_db()
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not job:
+        return "Job not found.", 404
+    return render_template('shared/payment_success.html', job=job, already_paid=False)
 
-@app.route("/receipts/save", methods=["POST"])
-@login_required
-def receipt_save():
-    company_id  = get_current_company()
-    entity_id   = request.form.get("entity_id", type=int)
-    amount      = request.form.get("amount", type=float, default=0)
-    invoice_ids = [int(x) for x in request.form.get("invoice_ids", "").split(",") if x.strip()]
-    narration   = request.form.get("narration", "")
-    pay_mode    = request.form.get("pay_mode", "Cash")
-    txn_date_str = request.form.get("txn_date")
-    txn_date    = date.fromisoformat(txn_date_str) if txn_date_str else date.today()
+@app.route('/razorpay/webhook', methods=['POST'])
+def razorpay_webhook():
+    webhook_secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
+    payload = request.get_data()
+    received_sig = request.headers.get('X-Razorpay-Signature', '')
+    if webhook_secret:
+        expected = hmac.new(webhook_secret.encode(), payload, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, received_sig):
+            return 'Invalid signature', 400
+    event = request.json
+    if event and event.get('event') == 'payment.captured':
+        payment = event['payload']['payment']['entity']
+        order_id  = payment.get('order_id')
+        payment_id = payment.get('id')
+        db = get_db()
+        job = db.execute("SELECT * FROM jobs WHERE razorpay_order_id=?", (order_id,)).fetchone()
+        if job and job['payment_status'] != 'paid':
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            db.execute("""
+                UPDATE jobs SET payment_status='paid', payment_received_at=?,
+                razorpay_payment_id=?, status='payment_received', updated_at=?
+                WHERE razorpay_order_id=?
+            """, (now, payment_id, now, order_id))
+            db.execute(
+                "INSERT INTO job_logs (job_id, action, performed_by, details) VALUES (?,?,?,?)",
+                (job['job_id'], 'Payment Confirmed via Webhook', None, f'Payment ID: {payment_id}')
+            )
+            
+            # Send WhatsApp payment confirmation
+            send_payment_received_confirmation(dict(job), job['total_amount'] or 0, payment_id)
+            
+            db.commit()
+    return 'OK', 200
 
-    if not entity_id or amount <= 0:
-        flash("Please select a client and enter a valid amount.")
-        return redirect(url_for("receipt_new"))
+# ─── WHATSAPP SETTINGS PAGE (Optional) ────────────────────────────────────────
+@app.route('/admin/whatsapp')
+@admin_required
+def whatsapp_settings():
+    aisensy_configured = bool(AISENSY_API_KEY)
+    return render_template('admin/whatsapp_settings.html', aisensy_configured=aisensy_configured)
 
-    if not invoice_ids:
-        rows = _outstanding_invoices_for_client(company_id, entity_id)
-        invoice_ids = [r["id"] for r in rows]
+# ─── TEST WHATSAPP ENDPOINT (Development only) ───────────────────────────────
+@app.route('/admin/test-whatsapp/<job_id>')
+@admin_required
+def test_whatsapp(job_id):
+    """Test endpoint to manually send WhatsApp messages"""
+    db = get_db()
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not job:
+        flash('Job not found', 'error')
+        return redirect(url_for('admin_dashboard'))
+    
+    result = send_job_created_notification(dict(job))
+    if result.get('success'):
+        flash(f'Test WhatsApp sent to {job["customer_phone"]}', 'success')
+    else:
+        flash(f'WhatsApp test failed: {result.get("error")}', 'error')
+    
+    return redirect(url_for('admin_job_detail', job_id=job_id))
 
-    remaining = amount
-    settled   = 0
+def migrate_db():
+    """Add any missing columns to existing databases (safe to run repeatedly)."""
+    with get_db() as db:
+        # Get existing columns in jobs table
+        existing_cols = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
 
-    for inv_id in invoice_ids:
-        if remaining <= 0:
-            break
-        inv = Invoice.query.filter_by(id=inv_id, company_id=company_id).first()
-        if not inv:
-            continue
+        migrations = [
+            ("payment_method",          "ALTER TABLE jobs ADD COLUMN payment_method TEXT DEFAULT 'razorpay'"),
+            ("invoice_generate_date",   "ALTER TABLE jobs ADD COLUMN invoice_generate_date TIMESTAMP"),
+            ("invoice_total_amount",    "ALTER TABLE jobs ADD COLUMN invoice_total_amount REAL DEFAULT 0"),
+            ("razorpay_order_id",       "ALTER TABLE jobs ADD COLUMN razorpay_order_id TEXT"),
+            ("razorpay_payment_id",     "ALTER TABLE jobs ADD COLUMN razorpay_payment_id TEXT"),
+            ("payment_link",            "ALTER TABLE jobs ADD COLUMN payment_link TEXT"),
+            ("payment_token",           "ALTER TABLE jobs ADD COLUMN payment_token TEXT"),
+            ("whatsapp_message_id",     "ALTER TABLE jobs ADD COLUMN whatsapp_message_id TEXT"),
+            ("estimate_amount",         "ALTER TABLE jobs ADD COLUMN estimate_amount REAL DEFAULT 0"),
+            ("estimate_notes",          "ALTER TABLE jobs ADD COLUMN estimate_notes TEXT"),
+            ("estimate_sent_at",        "ALTER TABLE jobs ADD COLUMN estimate_sent_at TIMESTAMP"),
+            ("estimate_approved_at",    "ALTER TABLE jobs ADD COLUMN estimate_approved_at TIMESTAMP"),
+            ("not_repairable_reason",   "ALTER TABLE jobs ADD COLUMN not_repairable_reason TEXT"),
+            ("sent_back_to_customer_at","ALTER TABLE jobs ADD COLUMN sent_back_to_customer_at TIMESTAMP"),
+            ("inspection_findings",     "ALTER TABLE jobs ADD COLUMN inspection_findings TEXT"),
+            ("courier_name",            "ALTER TABLE jobs ADD COLUMN courier_name TEXT"),
+            ("courier_receipt_path",    "ALTER TABLE jobs ADD COLUMN courier_receipt_path TEXT"),
+        ]
 
-        inv_balance = getattr(inv, "balance", None)
-        if inv_balance is None:
-            inv_balance = inv.grand_total or 0
+        for col_name, sql in migrations:
+            if col_name not in existing_cols:
+                try:
+                    db.execute(sql)
+                    print(f"[migrate_db] Added column: {col_name}")
+                except Exception as e:
+                    print(f"[migrate_db] Skipped {col_name}: {e}")
 
-        apply        = min(remaining, inv_balance)
-        remaining   -= apply
-        inv_balance -= apply
-        settled     += apply
+        db.commit()
 
-        if hasattr(inv, "balance"):
-            inv.balance = inv_balance
-        if hasattr(inv, "paid_amount"):
-            inv.paid_amount = (inv.paid_amount or 0) + apply
+init_db()
+migrate_db()
 
-        if inv_balance <= 0:
-            inv.status = "Paid"
-        elif apply > 0:
-            inv.status = "Partial"
-
-    client = Client.query.filter_by(id=entity_id, company_id=company_id).first()
-    if client and hasattr(client, "pending") and client.pending:
-        client.pending = max(0, (client.pending or 0) - settled)
-
-    db.session.commit()
-    flash(f"Receipt of ₹{settled:,.2f} recorded via {pay_mode}. {narration}")
-    return redirect(url_for("debtors_list"))
-
-
-@app.route("/payments/new")
-@login_required
-def payment_new():
-    company_id    = get_current_company()
-    all_suppliers = Client.query.filter_by(company_id=company_id).order_by(Client.name).all()
-    selected_id   = request.args.get("supplier_id", type=int)
-    invoices_json = _build_invoices_json(company_id, all_suppliers,
-                                         _outstanding_invoices_for_supplier)
-    return render_template(
-        "receipt_payment.html",
-        mode="payment",
-        entities=all_suppliers,
-        invoices_json=invoices_json,
-        selected_id=selected_id,
-        today=str(date.today()),
-    )
-
-
-@app.route("/payments/save", methods=["POST"])
-@login_required
-def payment_save():
-    company_id  = get_current_company()
-    entity_id   = request.form.get("entity_id", type=int)
-    amount      = request.form.get("amount", type=float, default=0)
-    invoice_ids = [int(x) for x in request.form.get("invoice_ids", "").split(",") if x.strip()]
-    narration   = request.form.get("narration", "")
-    pay_mode    = request.form.get("pay_mode", "Cash")
-    txn_date_str = request.form.get("txn_date")
-    txn_date    = date.fromisoformat(txn_date_str) if txn_date_str else date.today()
-
-    if not entity_id or amount <= 0:
-        flash("Please select a supplier and enter a valid amount.")
-        return redirect(url_for("payment_new"))
-
-    if not invoice_ids:
-        rows = _outstanding_invoices_for_supplier(company_id, entity_id)
-        invoice_ids = [r["id"] for r in rows]
-
-    remaining = amount
-    settled   = 0
-
-    for inv_id in invoice_ids:
-        if remaining <= 0:
-            break
-        inv = PurchaseInvoice.query.filter_by(id=inv_id, company_id=company_id).first()
-        if not inv:
-            continue
-
-        inv_balance  = inv.balance or (inv.grand_total or 0)
-        apply        = min(remaining, inv_balance)
-        remaining   -= apply
-        settled     += apply
-
-        inv.balance     = inv_balance - apply
-        inv.paid_amount = (inv.paid_amount or 0) + apply
-
-        if inv.balance <= 0:
-            inv.status = "Paid"
-        elif apply > 0:
-            inv.status = "Partial"
-
-        if inv.supplier and hasattr(inv.supplier, "pending"):
-            inv.supplier.pending = max(0, (inv.supplier.pending or 0) - apply)
-
-    db.session.commit()
-    flash(f"Payment of ₹{settled:,.2f} recorded via {pay_mode}. {narration}")
-    return redirect(url_for("creditors_list"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ── App entry point ───────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-        seed_database()
-    app.run(debug=True, port=5003)
-else:
-    # When run by Gunicorn / Render, seed after the app is fully loaded
-    with app.app_context():
-        seed_database()
+if __name__ == '__main__':
+    app.run(debug=True, port=5015)
