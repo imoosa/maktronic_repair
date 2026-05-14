@@ -29,14 +29,14 @@ AISENSY_API_KEY = os.environ.get('AISENSY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI
 AISENSY_BASE_URL = 'https://backend.aisensy.com/campaign/t1/api/v2'
 
 # ─── ACCOUNTS DEPARTMENT WHATSAPP NUMBER ─────────────────────────────────────
-ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '917506691312')  # ← replace with real number
+ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '918551872118')  # ← replace with real number
 
 # ─── EXTRA NOTIFICATION NUMBERS ──────────────────────────────────────────────
 # These two numbers receive copies of Job Created, Sent for Repair, and Job Closed
 # notifications (in addition to the customer).
 # Format: 91XXXXXXXXXX  (country code + 10-digit number, no spaces/dashes)
-EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '917045015352')  # ← replace with real number
-EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919820009043')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '918551872118')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919730667697')  # ← replace with real number
 
 # ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
 # AiSensy must reach your server from the internet to fetch media (PDF invoices).
@@ -1998,6 +1998,31 @@ def migrate_db():
                     print(f"[migrate_db] Added column: {col_name}")
                 except Exception as e:
                     print(f"[migrate_db] Skipped {col_name}: {e}")
+
+        # ── Fix: add 'manager' to role CHECK constraint if missing ────────────
+        # SQLite doesn't support ALTER TABLE ... MODIFY CONSTRAINT, so we
+        # recreate the users table if the old constraint is still in place.
+        schema = db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()
+        if schema and "'manager'" not in schema['sql']:
+            print("[migrate_db] Recreating users table to add 'manager' role...")
+            db.executescript('''
+                ALTER TABLE users RENAME TO users_old;
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin','technician','manager')),
+                    name TEXT NOT NULL,
+                    permissions TEXT DEFAULT "{}",
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO users SELECT * FROM users_old;
+                DROP TABLE users_old;
+            ''')
+            print("[migrate_db] Done — 'manager' role now allowed.")
+        # ─────────────────────────────────────────────────────────────────────
 
         db.commit()
 
