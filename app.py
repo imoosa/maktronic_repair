@@ -604,11 +604,11 @@ def init_db():
         existing = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not existing:
             db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
-                ('admin', generate_password_hash('admin123'), 'admin', 'Admin User'))
+                ('admin', generate_password_hash('Admin@123'), 'admin', 'Admin User'))
             db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
-                ('tech1', generate_password_hash('tech123'), 'technician', 'Ravi Kumar'))
+                ('tech1', generate_password_hash('Tech@123'), 'technician', 'Ravi Kumar'))
             db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
-                ('tech2', generate_password_hash('tech456'), 'technician', 'Suresh Patil'))
+                ('tech2', generate_password_hash('Tech@456'), 'technician', 'Suresh Patil'))
         db.commit()
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
