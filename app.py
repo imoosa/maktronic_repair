@@ -593,6 +593,15 @@ def manager_required(f):
             return redirect(url_for('manager_jobs'))
         return f(*args, **kwargs)
     return decorated
+
+def has_permission(perm):
+    """Check if current session user has a specific permission.
+    Admins always have all permissions."""
+    if session.get('role') == 'admin':
+        return True
+    perms = session.get('permissions', {})
+    return bool(perms.get(perm, False))    
+
 # ─── WHATSAPP WEBHOOK (Handles YES/NO replies) ───────────────────────────────
 @app.route('/whatsapp/webhook', methods=['POST'])
 def whatsapp_webhook():
