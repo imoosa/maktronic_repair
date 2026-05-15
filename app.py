@@ -236,6 +236,83 @@ def _send_job_closed_extra_notification(job):
         job.get('item_type', 'Device'),          # {{3}} device
     ]
     _send_to_extra_numbers(TEMPLATE_IDS['job_closed'], variables)
+def _send_job_deleted_extra_notification(job, deleted_by='Admin'):
+    """Notify EXTRA_NOTIFY_NUMBER_1 and EXTRA_NOTIFY_NUMBER_2 when a job is deleted."""
+    if not job:
+        return
+    job_id    = job.get('job_id', 'N/A')
+    customer  = job.get('customer_name', 'Unknown')
+    item      = job.get('item_type', 'Device')
+    phone     = job.get('customer_phone', '—')
+    now_str   = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
+
+    for number in [EXTRA_NOTIFY_NUMBER_1, EXTRA_NOTIFY_NUMBER_2]:
+        if not number or 'XXXXXXXXXX' in number:
+            continue
+        url = "https://backend.aisensy.com/campaign/t1/api/v2"
+        payload = {
+            "apiKey": AISENSY_API_KEY,
+            "campaignName": "job_deleted_alert",
+            "destination": format_phone_number(number),
+            "userName": customer,
+            "source": "api",
+            "templateParams": [
+                customer,    # {{1}} customer name
+                job_id,      # {{2}} job ID
+                item,        # {{3}} device/item
+                phone,       # {{4}} customer phone
+                deleted_by,  # {{5}} who deleted
+                now_str,     # {{6}} timestamp
+            ],
+            "tags": [],
+            "attributes": {}
+        }
+        headers = {'Content-Type': 'application/json'}
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            print(f"[WhatsApp Delete Alert] Sent to {number}: {resp.json()}")
+        except Exception as e:
+            print(f"[WhatsApp Delete Alert] Failed to send to {number}: {e}")
+
+def _send_bulk_deleted_extra_notification(jobs_data):
+    """Notify EXTRA_NOTIFY_NUMBER_1 and EXTRA_NOTIFY_NUMBER_2 for each job in a bulk delete.
+    Sends one message per job with only: customer_name, phone, job_id.
+    """
+    for job in jobs_data:
+        customer = job.get('customer_name', 'Unknown')
+        phone    = job.get('customer_phone', '—')
+        job_id   = job.get('job_id', 'N/A')
+
+        variables = [
+            customer,  # {{1}} customer name
+            phone,     # {{2}} customer phone
+            job_id,    # {{3}} job ID
+        ]
+
+        for number in [EXTRA_NOTIFY_NUMBER_1, EXTRA_NOTIFY_NUMBER_2]:
+            if not number or 'XXXXXXXXXX' in number:
+                continue
+            payload = {
+                "apiKey": AISENSY_API_KEY,
+                "campaignName": TEMPLATE_IDS['bulk_job_deleted_alert'],
+                "destination": format_phone_number(number),
+                "userName": customer,
+                "source": "api",
+                "templateParams": variables,
+                "tags": [],
+                "attributes": {}
+            }
+            headers = {'Content-Type': 'application/json'}
+            try:
+                resp = requests.post(
+                    "https://backend.aisensy.com/campaign/t1/api/v2",
+                    json=payload, headers=headers, timeout=30
+                )
+                resp.raise_for_status()
+                print(f"[WhatsApp Bulk Delete] Sent for job {job_id} to {number}: {resp.json()}")
+            except Exception as e:
+                print(f"[WhatsApp Bulk Delete] Failed for job {job_id} to {number}: {e}")
 
 def send_job_closed_notification(job):
     """Send Job Closed thank-you to customer + extra numbers.
