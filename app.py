@@ -2531,26 +2531,14 @@ def test_whatsapp(job_id):
 def migrate_db():
     """Add any missing columns to existing databases (safe to run repeatedly)."""
     with get_db() as db:
-
-        # ── SAFETY: drop any stale triggers referencing users_old ─────────────
-        stale_triggers = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%users_old%'"
-        ).fetchall()
-        for t in stale_triggers:
-            db.execute(f"DROP TRIGGER IF EXISTS [{t['name']}]")
-            print(f"[migrate_db] Dropped stale trigger: {t['name']}")
-        db.execute("DROP TABLE IF EXISTS users_old")
-        db.commit()
-
-        # ── RECOVERY: fix broken state from a previously interrupted table swap ──
-        # If users_old exists but users does not, the last migration crashed halfway.
-        # Finish the swap now before doing anything else.
+        # First, check if we're in a broken state
         tables = {row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-
+        
+        # RECOVERY: If users_old exists but users doesn't, restore from users_old
         if 'users_old' in tables and 'users' not in tables:
-            print("[migrate_db] RECOVERY: found users_old without users — completing interrupted migration...")
+            print("[migrate_db] RECOVERY: found users_old without users — restoring...")
             db.execute("PRAGMA foreign_keys = OFF")
             db.execute("""
                 CREATE TABLE users (
@@ -2576,18 +2564,34 @@ def migrate_db():
             db.execute("PRAGMA foreign_keys = ON")
             db.commit()
             print("[migrate_db] RECOVERY complete — users table restored.")
-
+        
+        # If both users_old and users exist, clean up
         elif 'users_old' in tables and 'users' in tables:
-            # Both exist — previous run copied data but crashed before DROP. Clean up.
-            print("[migrate_db] RECOVERY: dropping stale users_old...")
-            db.execute("PRAGMA foreign_keys = OFF")
-            db.execute("DROP TABLE users_old")
-            db.execute("PRAGMA foreign_keys = ON")
+            print("[migrate_db] Cleaning up stale users_old...")
+            db.execute("DROP TABLE IF EXISTS users_old")
             db.commit()
-            print("[migrate_db] RECOVERY: stale users_old removed.")
-
-        # ── Column migrations ─────────────────────────────────────────────────
+        
+        # Now proceed with normal column migrations
         existing_cols = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+        
+        # Also check users table columns
+        existing_users_cols = {row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+        
+        # Add permissions column to users if missing
+        if 'permissions' not in existing_users_cols:
+            try:
+                db.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT '{}'")
+                print("[migrate_db] Added permissions column to users")
+            except Exception as e:
+                print(f"[migrate_db] Could not add permissions: {e}")
+        
+        # Add created_at column to users if missing
+        if 'created_at' not in existing_users_cols:
+            try:
+                db.execute("ALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                print("[migrate_db] Added created_at column to users")
+            except Exception as e:
+                print(f"[migrate_db] Could not add created_at: {e}")
 
         migrations = [
             ("payment_method",          "ALTER TABLE jobs ADD COLUMN payment_method TEXT DEFAULT 'razorpay'"),
@@ -2617,59 +2621,90 @@ def migrate_db():
                 except Exception as e:
                     print(f"[migrate_db] Skipped {col_name}: {e}")
 
-        # ── Fix: add 'manager' to role CHECK constraint if missing ────────────
-        # SQLite doesn't support ALTER TABLE ... MODIFY CONSTRAINT, so we
-        # recreate the users table if the old constraint is still in place.
-        # Each step is committed individually so a crash mid-swap is recoverable
-        # on the next startup via the RECOVERY block above.
-        schema = db.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
-        ).fetchone()
-        if schema and "'manager'" not in schema['sql']:
-            print("[migrate_db] Recreating users table to add 'manager' role...")
-            db.execute("PRAGMA foreign_keys = OFF")
-
-            # Step 1: rename — commit immediately so recovery can see users_old
-            db.execute("ALTER TABLE users RENAME TO users_old")
+        # Update role constraint without breaking existing data
+        # SQLite doesn't support ALTER TABLE MODIFY CONSTRAINT, so we need to be careful
+        try:
+            # Try to insert a test record with manager role to see if constraint allows it
+            db.execute("INSERT OR IGNORE INTO users (username, password, role, name) VALUES ('_test_mgr_', 'test', 'manager', '_test_')")
+            db.execute("DELETE FROM users WHERE username = '_test_mgr_'")
             db.commit()
-
-            # Step 2: create new table with updated constraint
-            db.execute("""
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK(role IN ('admin','technician','manager')),
-                    name TEXT NOT NULL,
-                    permissions TEXT DEFAULT "{}",
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            db.commit()
-
-            # Step 3: copy data
-            db.execute("""
-                INSERT INTO users (id, username, password, role, name, permissions, created_at)
-                SELECT id, username, password, role, name,
-                    CASE WHEN permissions IS NOT NULL AND length(permissions) > 0
-                         AND permissions NOT LIKE '20%'
-                    THEN permissions ELSE '{}' END,
-                    created_at
-                FROM users_old
-            """)
-            db.commit()
-
-            # Step 4: drop backup and re-enable FK
-            db.execute("DROP TABLE users_old")
-            db.execute("PRAGMA foreign_keys = ON")
-            db.commit()
-            print("[migrate_db] Done — 'manager' role now allowed.")
-        # ─────────────────────────────────────────────────────────────────────
+            print("[migrate_db] 'manager' role is already allowed in users table")
+        except Exception as e:
+            # Constraint doesn't allow manager - need to recreate table
+            if "'manager'" not in str(e):
+                print(f"[migrate_db] Non-constraint error: {e}")
+            else:
+                print("[migrate_db] Updating users table to allow 'manager' role...")
+                try:
+                    db.execute("PRAGMA foreign_keys = OFF")
+                    
+                    # Create backup of current users
+                    db.execute("CREATE TABLE users_backup AS SELECT * FROM users")
+                    
+                    # Drop old table
+                    db.execute("DROP TABLE users")
+                    
+                    # Recreate with correct constraint
+                    db.execute("""
+                        CREATE TABLE users (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            username TEXT UNIQUE NOT NULL,
+                            password TEXT NOT NULL,
+                            role TEXT NOT NULL CHECK(role IN ('admin','technician','manager')),
+                            name TEXT NOT NULL,
+                            permissions TEXT DEFAULT "{}",
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    
+                    # Restore data
+                    db.execute("""
+                        INSERT INTO users (id, username, password, role, name, permissions, created_at)
+                        SELECT id, username, password, 
+                            CASE WHEN role = 'manager' THEN 'technician' ELSE role END,
+                            name, 
+                            CASE WHEN permissions IS NOT NULL AND permissions NOT LIKE '20%' 
+                                 THEN permissions ELSE '{}' END,
+                            created_at
+                        FROM users_backup
+                    """)
+                    
+                    db.execute("DROP TABLE users_backup")
+                    db.execute("PRAGMA foreign_keys = ON")
+                    db.commit()
+                    print("[migrate_db] Successfully updated users table for 'manager' role")
+                except Exception as recreate_err:
+                    print(f"[migrate_db] Failed to update constraint: {recreate_err}")
+                    # Try to recover
+                    if 'users_backup' in {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}:
+                        db.execute("DROP TABLE IF EXISTS users")
+                        db.execute("ALTER TABLE users_backup RENAME TO users")
+                    db.execute("PRAGMA foreign_keys = ON")
+                    db.commit()
 
         db.commit()
 
-init_db()
-migrate_db()
+def ensure_db_initialized():
+    """Ensure database is properly initialized with all tables and migrations."""
+    try:
+        init_db()  # This creates tables if they don't exist
+        migrate_db()  # This adds any missing columns
+        print("[Database] Successfully initialized")
+    except Exception as e:
+        print(f"[Database] Initialization error: {e}")
+        # Try a more aggressive recovery if needed
+        with get_db() as db:
+            tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            print(f"[Database] Existing tables: {[t[0] for t in tables]}")
+
+# Initialize database with proper error handling
+try:
+    ensure_db_initialized()
+except Exception as e:
+    print(f"CRITICAL: Database initialization failed: {e}")
+    # Fallback: try basic init
+    init_db()
+    print("Fallback init completed")
 
 if __name__ == '__main__':
     app.run(debug=True, port=5015)
