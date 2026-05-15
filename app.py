@@ -1544,7 +1544,7 @@ def admin_add_user():
     username = request.form.get('username', '').strip()
     password = request.form.get('password', '').strip()
     name     = request.form.get('name', '').strip()
-    role     = request.form.get('role', 'technician')
+    role     = request.form.get('role', 'technician')  # This should be 'manager' when selected
 
     if not username or not password or not name:
         flash('Username, password and name are required.', 'error')
@@ -1555,13 +1555,19 @@ def admin_add_user():
         flash(f'Username "{username}" is already taken.', 'error')
         return redirect(url_for('admin_users'))
 
-    perms = {k: True for k in ALL_PERMISSIONS if request.form.get(k)}
+    # Only set permissions for non-admin users
+    perms = {}
+    if role != 'admin':
+        for k in ALL_PERMISSIONS:
+            if request.form.get(k):
+                perms[k] = True
+    
     db.execute(
         "INSERT INTO users (username, password, role, name, permissions) VALUES (?,?,?,?,?)",
         (username, generate_password_hash(password), role, name, json.dumps(perms))
     )
     db.commit()
-    flash(f'User "{name}" created successfully!', 'success')
+    flash(f'User "{name}" created successfully with role: {role}!', 'success')
     return redirect(url_for('admin_users'))
 
 @app.route('/admin/users/delete/<int:user_id>', methods=['POST'])
