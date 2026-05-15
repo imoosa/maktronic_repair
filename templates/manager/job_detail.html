@@ -124,29 +124,34 @@
   .wa-tick.green { color:var(--green); }
   .wa-tick.grey  { color:var(--border); }
 /* ── Print styles for barcode sticker ── */
-@media print {
-  @page {
-    size: 3in 1.5in;
-    margin: 0;
+ /* ── Barcode card ────────────────────────────────────────────────────────── */
+  #barcode-card { overflow-x: auto; }
+  #barcode-svg  { max-width: 100%; height: auto; display: block; }
+
+  /* ── Print styles for barcode sticker ───────────────────────────────────── */
+  @media print {
+    @page {
+      size: 3in 1.5in;
+      margin: 0;
+    }
+    body * { visibility: hidden !important; }
+    #barcode-print-area,
+    #barcode-print-area * { visibility: visible !important; }
+    #barcode-print-area {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 3in !important;
+      height: 1.5in !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #fff !important;
+      padding: 4px 8px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
   }
-  body * { visibility: hidden !important; }
-  #barcode-print-area,
-  #barcode-print-area * { visibility: visible !important; }
-  #barcode-print-area {
-    position: fixed !important;
-    inset: 0 !important;
-    width: 3in !important;
-    height: 1.5in !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    justify-content: center !important;
-    background: #fff !important;
-    padding: 4px 8px !important;
-    box-sizing: border-box !important;
-    overflow: hidden !important;
-  }
-}
 
 </style>
 {% endblock %}
