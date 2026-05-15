@@ -1591,48 +1591,6 @@ def admin_delete_job(job_id):
     flash(f'🗑️ Job {job_id} deleted successfully.', 'success')
     return redirect(url_for('admin_jobs'))
 
-@app.route('/admin/jobs/bulk-delete', methods=['POST'])
-@admin_required
-def admin_bulk_delete_jobs():
-    """Bulk delete jobs — requires the logged-in admin's own password."""
-    db = get_db()
-
-    confirm_password = request.form.get('confirm_password', '').strip()
-    if not confirm_password:
-        flash('⚠️ Password is required to bulk-delete jobs.', 'error')
-        return redirect(url_for('admin_jobs'))
-
-    current_user = db.execute(
-        "SELECT * FROM users WHERE id=?", (session['user_id'],)
-    ).fetchone()
-    if not current_user or not check_password_hash(current_user['password'], confirm_password):
-        flash('❌ Incorrect password. No jobs were deleted.', 'error')
-        return redirect(url_for('admin_jobs'))
-
-    raw_ids = request.form.get('job_ids', '')
-    job_ids = [j.strip() for j in raw_ids.split(',') if j.strip()]
-    if not job_ids:
-        flash('⚠️ No jobs selected.', 'error')
-        return redirect(url_for('admin_jobs'))
-
-    deleted = 0
-    for job_id in job_ids:
-        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-        if not job:
-            continue
-        job_data = dict(job)
-        db.execute("DELETE FROM job_photos WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM notifications WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
-        _send_job_deleted_extra_notification(job_data, deleted_by=session.get('name', 'Admin'))
-        deleted += 1
-
-    db.commit()
-    flash(f'🗑️ {deleted} job(s) deleted successfully.', 'success')
-    return redirect(url_for('admin_jobs'))
-
-
 # ─── USER MANAGEMENT (Admin only) ────────────────────────────────────────────
 ALL_PERMISSIONS = {
     'view_dashboard':  'View Dashboard',
@@ -2158,52 +2116,6 @@ def manager_delete_job(job_id):
     return redirect(url_for('manager_jobs'))
 
 
-@app.route('/manager/jobs/bulk-delete', methods=['POST'])
-@manager_required
-def manager_bulk_delete_jobs():
-    """Bulk delete jobs — requires the ADMIN password (same as single delete)."""
-    if not has_permission('delete_jobs'):
-        flash('You do not have permission to delete jobs.', 'error')
-        return redirect(url_for('manager_jobs'))
-
-    db = get_db()
-
-    confirm_password = request.form.get('confirm_password', '').strip()
-    if not confirm_password:
-        flash('⚠️ Admin password is required to bulk-delete jobs.', 'error')
-        return redirect(url_for('manager_jobs'))
-
-    admin_user = db.execute(
-        "SELECT * FROM users WHERE role='admin' ORDER BY id ASC LIMIT 1"
-    ).fetchone()
-    if not admin_user or not check_password_hash(admin_user['password'], confirm_password):
-        flash('❌ Incorrect admin password. No jobs were deleted.', 'error')
-        return redirect(url_for('manager_jobs'))
-
-    raw_ids = request.form.get('job_ids', '')
-    job_ids = [j.strip() for j in raw_ids.split(',') if j.strip()]
-    if not job_ids:
-        flash('⚠️ No jobs selected.', 'error')
-        return redirect(url_for('manager_jobs'))
-
-    deleted = 0
-    for job_id in job_ids:
-        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-        if not job:
-            continue
-        job_data = dict(job)
-        db.execute("DELETE FROM job_photos WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM notifications WHERE job_id=?", (job_id,))
-        db.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
-        _send_job_deleted_extra_notification(job_data, deleted_by=session.get('name', 'Manager'))
-        deleted += 1
-
-    db.commit()
-    flash(f'🗑️ {deleted} job(s) deleted successfully.', 'success')
-    return redirect(url_for('manager_jobs'))
-
-
 # ─── TECHNICIAN ROUTES ────────────────────────────────────────────────────────
 @app.route('/tech')
 @login_required
@@ -2567,13 +2479,17 @@ def migrate_db():
         # ── Fix: add 'manager' to role CHECK constraint if missing ────────────
         # SQLite doesn't support ALTER TABLE ... MODIFY CONSTRAINT, so we
         # recreate the users table if the old constraint is still in place.
+        # NOTE: executescript() issues an implicit COMMIT before running, which
+        # triggers FK violations (jobs.assigned_tech_id -> users.id).
+        # Fix: use plain execute() calls and disable FK checks for the swap.
         schema = db.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='users'"
         ).fetchone()
         if schema and "'manager'" not in schema['sql']:
             print("[migrate_db] Recreating users table to add 'manager' role...")
-            db.executescript('''
-                ALTER TABLE users RENAME TO users_old;
+            db.execute("PRAGMA foreign_keys = OFF")
+            db.execute("ALTER TABLE users RENAME TO users_old")
+            db.execute("""
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
@@ -2582,17 +2498,19 @@ def migrate_db():
                     name TEXT NOT NULL,
                     permissions TEXT DEFAULT "{}",
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
+                )
+            """)
+            db.execute("""
                 INSERT INTO users (id, username, password, role, name, permissions, created_at)
-                SELECT
-                    id, username, password, role, name,
+                SELECT id, username, password, role, name,
                     CASE WHEN permissions IS NOT NULL AND length(permissions) > 0
                          AND permissions NOT LIKE '20%'
                     THEN permissions ELSE '{}' END,
                     created_at
-                FROM users_old;
-                DROP TABLE users_old;
-            ''')
+                FROM users_old
+            """)
+            db.execute("DROP TABLE users_old")
+            db.execute("PRAGMA foreign_keys = ON")
             print("[migrate_db] Done — 'manager' role now allowed.")
         # ─────────────────────────────────────────────────────────────────────
 
