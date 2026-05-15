@@ -83,7 +83,8 @@ TEMPLATE_IDS = {
     'product_dispatched': 'product_dispatch',
     'accounts_department': 'accounts_department',  # Notify accounts to generate invoice
     'job_closed': 'job_closed',
-    'sent_for_approval': 'sent_for_approval',# Job Closed — thank-you to customer
+    'sent_for_approval': 'sent_for_approval',
+    'bulk_job_deleted_alert': 'bulk_job_deleted_alert',
 }
 
 
