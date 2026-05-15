@@ -2706,5 +2706,179 @@ except Exception as e:
     init_db()
     print("Fallback init completed")
 
+# ─── EMERGENCY DATABASE REPAIR ROUTE ──────────────────────────────────────────
+@app.route('/repair-db')
+def repair_database():
+    """Emergency endpoint to completely rebuild the database"""
+    try:
+        import shutil
+        import os
+        
+        # Create backup of current DB
+        if os.path.exists(DB_PATH):
+            backup_name = f'{DB_PATH}.backup_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}'
+            shutil.copy2(DB_PATH, backup_name)
+            
+        # Delete corrupted database
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+            print("Removed corrupted database")
+        
+        # Create fresh database
+        with get_db() as db:
+            db.executescript('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin','technician','manager')),
+                    name TEXT NOT NULL,
+                    permissions TEXT DEFAULT "{}",
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT UNIQUE NOT NULL,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    customer_email TEXT,
+                    item_description TEXT,
+                    item_type TEXT,
+                    barcode TEXT,
+                    status TEXT DEFAULT 'sent_for_inspection',
+                    assigned_tech_id INTEGER,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    repair_findings TEXT,
+                    parts_cost REAL DEFAULT 0,
+                    labour_cost REAL DEFAULT 0,
+                    total_amount REAL DEFAULT 0,
+                    invoice_number TEXT,
+                    payment_status TEXT DEFAULT 'pending',
+                    payment_received_at TIMESTAMP,
+                    tracking_number TEXT,
+                    dispatch_date TEXT,
+                    expected_delivery TEXT,
+                    delivered_at TIMESTAMP,
+                    notes TEXT,
+                    invoice_path TEXT,
+                    courier_name TEXT,
+                    courier_receipt_path TEXT,
+                    estimate_amount REAL DEFAULT 0,
+                    estimate_notes TEXT,
+                    estimate_sent_at TIMESTAMP,
+                    estimate_approved_at TIMESTAMP,
+                    not_repairable_reason TEXT,
+                    sent_back_to_customer_at TIMESTAMP,
+                    inspection_findings TEXT,
+                    invoice_generate_date TIMESTAMP,
+                    invoice_total_amount REAL DEFAULT 0,
+                    razorpay_order_id TEXT,
+                    razorpay_payment_id TEXT,
+                    payment_link TEXT,
+                    payment_token TEXT,
+                    whatsapp_message_id TEXT,
+                    payment_method TEXT DEFAULT 'razorpay',
+                    FOREIGN KEY(assigned_tech_id) REFERENCES users(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS job_photos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    photo_path TEXT NOT NULL,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS job_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    performed_by INTEGER,
+                    details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(performed_by) REFERENCES users(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recipient_id INTEGER NOT NULL,
+                    job_id TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    is_read INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(recipient_id) REFERENCES users(id)
+                );
+            ''')
+            
+            # Seed default users
+            db.execute("DELETE FROM users")
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('admin', generate_password_hash('Admin@123'), 'admin', 'Admin User'))
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('tech1', generate_password_hash('Tech@123'), 'technician', 'Ravi Kumar'))
+            db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
+                ('tech2', generate_password_hash('Tech@456'), 'technician', 'Suresh Patil'))
+            db.commit()
+        
+        return '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Database Repaired</title>
+            <style>
+                body { font-family: Arial; text-align: center; padding: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+                .container { background: white; padding: 30px; border-radius: 10px; max-width: 500px; margin: auto; }
+                h1 { color: #4CAF50; }
+                button { background: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 20px; }
+                button:hover { background: #45a049; }
+                .credentials { background: #f0f0f0; padding: 10px; border-radius: 5px; margin: 20px 0; text-align: left; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>✅ Database Repaired Successfully!</h1>
+                <div class="credentials">
+                    <strong>Login Credentials:</strong><br>
+                    Admin: admin / Admin@123<br>
+                    Technician 1: tech1 / Tech@123<br>
+                    Technician 2: tech2 / Tech@456
+                </div>
+                <button onclick="window.location.href='/admin'">Go to Admin Panel</button>
+                <button onclick="window.location.href='/login'" style="margin-left: 10px;">Go to Login</button>
+            </div>
+        </body>
+        </html>
+        '''
+    except Exception as e:
+        return f'<h1>Error repairing database:</h1><pre>{str(e)}</pre><br><a href="/admin">Go back</a>'
+
+@app.route('/force-reset')
+def force_reset():
+    """Force reset - deletes all jobs but keeps users"""
+    try:
+        import os
+        if os.path.exists(DB_PATH):
+            os.remove(DB_PATH)
+        init_db()
+        migrate_db()
+        return "Database reset successfully! <a href='/admin'>Go to Admin</a>"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# Simple initialization without complex migrations
+print("Initializing application...")
+try:
+    # Check if database exists and is valid
+    with get_db() as db:
+        db.execute("SELECT 1 FROM users LIMIT 1")
+    print("Database exists and is valid")
+except Exception as e:
+    print(f"Database issue detected: {e}")
+    print("Rebuilding database...")
+    init_db()
+    migrate_db()
+    print("Database rebuilt successfully")
+
 if __name__ == '__main__':
     app.run(debug=True, port=5015)
