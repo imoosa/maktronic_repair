@@ -214,6 +214,35 @@
   }
   .wa-tick.green { color: #25D366; }
   .wa-tick.grey  { color: var(--border); }
+
+  /* ── Barcode card ────────────────────────────────────────────────────────── */
+  #barcode-card { overflow-x: auto; }
+  #barcode-svg  { max-width: 100%; height: auto; display: block; }
+
+  /* ── Print styles for barcode sticker ───────────────────────────────────── */
+  @media print {
+    @page {
+      size: 3in 1.5in;
+      margin: 0;
+    }
+    body * { visibility: hidden !important; }
+    #barcode-print-area,
+    #barcode-print-area * { visibility: visible !important; }
+    #barcode-print-area {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 3in !important;
+      height: 1.5in !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #fff !important;
+      padding: 4px 8px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
+  }
 </style>
 {% endblock %}
 
@@ -402,6 +431,22 @@
         <tr><td style="padding:6px 0;color:var(--muted)">Problem</td><td style="padding:6px 0">{{ job.item_description or '—' }}</td></tr>
         {% if job.notes %}<tr><td style="padding:6px 0;color:var(--muted)">Notes</td><td style="padding:6px 0">{{ job.notes }}</td></tr>{% endif %}
       </table>
+    </div>
+
+    <!-- Barcode -->
+    <div class="card mb-4" id="barcode-card">
+      <div class="card-header">
+        <span class="card-title">🏷️ Barcode</span>
+        <button onclick="printBarcode()" class="btn btn-secondary btn-sm">🖨️ Print</button>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;padding:12px 4px 4px;gap:6px;overflow:hidden;width:100%">
+        <div style="width:100%;overflow:hidden;display:flex;justify-content:center">
+          <svg id="barcode-svg" style="max-width:100%;height:auto;display:block"></svg>
+        </div>
+        <div style="font-size:10px;color:var(--muted);text-align:center;word-break:break-all;padding:0 4px">
+          {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
+        </div>
+      </div>
     </div>
 
     <!-- Inspection Findings -->
@@ -681,7 +726,71 @@
 
 {% endblock %}
 
+<!-- Hidden barcode print area -->
+<div id="barcode-print-area" style="display:none">
+  <div style="font-family:monospace;font-size:8pt;font-weight:700;letter-spacing:0.5px;margin-bottom:3px;text-align:center;color:#000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.job_id }}</div>
+  <svg id="barcode-print-svg" style="display:block;max-width:2.9in"></svg>
+  <div style="margin-top:3px;font-size:7pt;text-align:center;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:2.8in">{{ job.customer_name }} · {{ job.item_type }}</div>
+  <div style="margin-top:2px;font-size:6.5pt;text-align:center;color:#555">{{ job.received_at[:10] }}</div>
+</div>
+
 {% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<script>
+/* ── Barcode generation ── */
+document.addEventListener('DOMContentLoaded', function() {
+  var barcodeVal = "{{ job.job_id }}";
+  var containerW = document.getElementById('barcode-card').offsetWidth - 40;
+  var barW = Math.min(2, Math.max(1, containerW / 120));
+  var opts = {
+    format: "CODE128",
+    width: barW,
+    height: 60,
+    displayValue: true,
+    fontSize: 11,
+    margin: 6,
+    background: "transparent",
+    lineColor: getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#E8EBF4'
+  };
+
+  try {
+    JsBarcode("#barcode-svg", barcodeVal, opts);
+  } catch(e) {
+    var el = document.getElementById('barcode-svg');
+    if (el) el.parentElement.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Could not generate barcode</div>';
+  }
+
+  try {
+    JsBarcode("#barcode-print-svg", barcodeVal, {
+      format: "CODE128",
+      width: 1.5,
+      height: 50,
+      displayValue: true,
+      fontSize: 9,
+      margin: 2,
+      background: "#ffffff",
+      lineColor: "#000000"
+    });
+  } catch(e) {}
+
+  window.onThemeChange = function(theme) {
+    var newColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || (theme === 'dark' ? '#E8EBF4' : '#1A1D2E');
+    try {
+      JsBarcode("#barcode-svg", barcodeVal, Object.assign({}, opts, { lineColor: newColor }));
+    } catch(e) {}
+  };
+});
+
+function printBarcode() {
+  var area = document.getElementById('barcode-print-area');
+  area.style.display = 'flex';
+  area.style.flexDirection = 'column';
+  area.style.alignItems = 'center';
+  area.style.justifyContent = 'center';
+  window.print();
+  setTimeout(function() { area.style.display = 'none'; }, 500);
+}
+</script>
 <script>
 function calcTotal() {
   var p = parseFloat(document.getElementById('parts').value) || 0;
