@@ -579,6 +579,20 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+def manager_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        if session.get('role') not in ('admin', 'manager'):
+            flash('Manager access required.', 'error')
+            return redirect(url_for('tech_dashboard'))
+        # Check if manager has permission to view dashboard
+        if request.endpoint == 'manager_dashboard' and not has_permission('view_dashboard'):
+            flash('You do not have permission to access the dashboard.', 'error')
+            return redirect(url_for('manager_jobs'))
+        return f(*args, **kwargs)
+    return decorated
 # ─── WHATSAPP WEBHOOK (Handles YES/NO replies) ───────────────────────────────
 @app.route('/whatsapp/webhook', methods=['POST'])
 def whatsapp_webhook():
