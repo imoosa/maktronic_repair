@@ -642,6 +642,20 @@ def login_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return redirect(url_for('login'))
+        
+        # ✅ SIMPLE FIX: Verify user still exists in database
+        db = get_db()
+        user = db.execute("SELECT id, role, name FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        if not user:
+            # User was deleted - clear session and redirect to login
+            session.clear()
+            flash('Your account has been deleted. Please contact admin.', 'error')
+            return redirect(url_for('login'))
+        
+        # Update session in case role changed
+        session['role'] = user['role']
+        session['name'] = user['name']
+        
         return f(*args, **kwargs)
     return decorated
 
