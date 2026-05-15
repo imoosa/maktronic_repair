@@ -699,8 +699,15 @@ def login():
             session['username'] = user['username']
             session['role'] = user['role']
             session['name'] = user['name']
+            # Store permissions in session for easy template access
+            try:
+                session['permissions'] = json.loads(user['permissions'] or '{}')
+            except Exception:
+                session['permissions'] = {}
             if user['role'] == 'admin':
                 return redirect(url_for('admin_dashboard'))
+            elif user['role'] == 'manager':
+                return redirect(url_for('manager_dashboard'))
             return redirect(url_for('tech_dashboard'))
         flash('Invalid credentials', 'error')
     return render_template('shared/login.html')
