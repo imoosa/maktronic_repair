@@ -1581,16 +1581,40 @@ def admin_update_job(job_id):
 @admin_required
 def admin_delete_job(job_id):
     db = get_db()
+
+    # ── Password verification ─────────────────────────────────────────────────
+    confirm_password = request.form.get('confirm_password', '').strip()
+    if not confirm_password:
+        flash('⚠️ Password is required to delete a job.', 'error')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    current_user = db.execute(
+        "SELECT * FROM users WHERE id=?", (session['user_id'],)
+    ).fetchone()
+    if not current_user or not check_password_hash(current_user['password'], confirm_password):
+        flash('❌ Incorrect password. Job was NOT deleted.', 'error')
+        return redirect(url_for('admin_job_detail', job_id=job_id))
+
+    # ── Fetch job info before deleting (for WhatsApp notification) ────────────
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    job_data = dict(job) if job else {}
+
+    # ── Delete ────────────────────────────────────────────────────────────────
     db.execute("DELETE FROM job_photos WHERE job_id=?", (job_id,))
     db.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
     db.execute("DELETE FROM notifications WHERE job_id=?", (job_id,))
     db.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
     db.commit()
-    flash(f'Job {job_id} deleted.', 'success')
+
+    # ── Notify extra numbers via WhatsApp ─────────────────────────────────────
+    _send_job_deleted_extra_notification(job_data, deleted_by=session.get('name', 'Admin'))
+
+    flash(f'🗑️ Job {job_id} deleted successfully.', 'success')
     return redirect(url_for('admin_jobs'))
 
 # ─── USER MANAGEMENT (Admin only) ────────────────────────────────────────────
 ALL_PERMISSIONS = {
+    'view_dashboard':  'View Dashboard',
     'view_all_jobs':   'View All Jobs',
     'create_jobs':     'Create Jobs',
     'edit_jobs':       'Edit Jobs',
@@ -1599,9 +1623,51 @@ ALL_PERMISSIONS = {
     'manage_payments': 'Manage Payments',
     'dispatch_jobs':   'Dispatch Jobs',
     'view_reports':    'View Reports',
-    'manage_users':    'Manage Users',
-    'export_data':     'Export Data',
 }
+
+@app.route('/admin/jobs/bulk-delete', methods=['POST'])
+@admin_required
+def admin_bulk_delete_jobs():
+    db = get_db()
+
+    # ── Password verification ─────────────────────────────────────────────────
+    confirm_password = request.form.get('confirm_password', '').strip()
+    raw = request.form.get('job_ids', '')
+    job_ids = [j.strip() for j in raw.split(',') if j.strip()]
+
+    if not confirm_password:
+        flash('⚠️ Password is required for bulk deletion.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    if not job_ids:
+        flash('⚠️ No jobs selected for deletion.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    current_user = db.execute(
+        "SELECT * FROM users WHERE id=?", (session['user_id'],)
+    ).fetchone()
+    if not current_user or not check_password_hash(current_user['password'], confirm_password):
+        flash('❌ Incorrect password. Jobs were NOT deleted.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    # ── Fetch all job data BEFORE deleting (for WhatsApp notifications) ───────
+    placeholders = ','.join('?' * len(job_ids))
+    jobs_data = [
+        dict(row) for row in
+        db.execute(f"SELECT * FROM jobs WHERE job_id IN ({placeholders})", job_ids).fetchall()
+    ]
+
+    # ── Delete all selected jobs ───────────────────────────────────────────────
+    db.execute(f"DELETE FROM job_photos      WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM job_logs        WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM notifications   WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM jobs            WHERE job_id IN ({placeholders})", job_ids)
+    db.commit()
+
+    # ── Notify extra numbers for each deleted job ─────────────────────────────
+    _send_bulk_deleted_extra_notification(jobs_data)
+
+    flash(f'🗑️ {len(jobs_data)} job(s) 
 
 @app.route('/admin/users')
 @admin_required
