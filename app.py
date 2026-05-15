@@ -35,7 +35,7 @@ ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '918551872
 # These two numbers receive copies of Job Created, Sent for Repair, and Job Closed
 # notifications (in addition to the customer).
 # Format: 91XXXXXXXXXX  (country code + 10-digit number, no spaces/dashes)
-EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '918551872118')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '918237417253')  # ← replace with real number
 EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919730667697')  # ← replace with real number
 
 # ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
@@ -60,13 +60,15 @@ TEMPLATE_IDS = {
     'estimate_sent': 'estimate_sents',
     'estimate_approved_confirmation': 'estimate_approved',
     'estimate_rejected_confirmation': 'estimate_rejection',
-    'repair_completed_invoice': 'dev_invoice_sent',              # Razorpay payment link invoice
-    'repair_completed_invoice_not_razorpay': 'dev_invoice_sent_other',  # Non-Razorpay invoice
+    'repair_completed_invoice': 'dev_invoice_sent',              
+    'repair_completed_invoice_not_razorpay': 'dev_invoice_sent_other',  
     'payment_received': 'payment_received',
     'product_dispatched': 'product_dispatch',
-    'accounts_department': 'accounts_department',  # Notify accounts to generate invoice
+    'accounts_department': 'accounts_department',  
     'job_closed': 'job_closed',
-    'sent_for_approval': 'sent_for_approval',# Job Closed — thank-you to customer
+    'sent_for_approval': 'sent_for_approval',
+    'delete_single_job': 'delete_single_job',
+    'bulk_job_deleted_alert': 'bulk_job_deleted_alert',
 }
 
 
@@ -275,6 +277,45 @@ def _send_job_deleted_extra_notification(job, deleted_by='Admin'):
             print(f"[WhatsApp Delete Alert] Sent to {number}: {resp.json()}")
         except Exception as e:
             print(f"[WhatsApp Delete Alert] Failed to send to {number}: {e}")
+
+def _send_bulk_deleted_extra_notification(jobs_data):
+    """Notify EXTRA_NOTIFY_NUMBER_1 and EXTRA_NOTIFY_NUMBER_2 for each job in a bulk delete.
+    Sends one message per job with only: customer_name, phone, job_id.
+    """
+    for job in jobs_data:
+        customer = job.get('customer_name', 'Unknown')
+        phone    = job.get('customer_phone', '—')
+        job_id   = job.get('job_id', 'N/A')
+
+        variables = [
+            customer,  # {{1}} customer name
+            phone,     # {{2}} customer phone
+            job_id,    # {{3}} job ID
+        ]
+
+        for number in [EXTRA_NOTIFY_NUMBER_1, EXTRA_NOTIFY_NUMBER_2]:
+            if not number or 'XXXXXXXXXX' in number:
+                continue
+            payload = {
+                "apiKey": AISENSY_API_KEY,
+                "campaignName": TEMPLATE_IDS['bulk_job_deleted_alert'],
+                "destination": format_phone_number(number),
+                "userName": customer,
+                "source": "api",
+                "templateParams": variables,
+                "tags": [],
+                "attributes": {}
+            }
+            headers = {'Content-Type': 'application/json'}
+            try:
+                resp = requests.post(
+                    "https://backend.aisensy.com/campaign/t1/api/v2",
+                    json=payload, headers=headers, timeout=30
+                )
+                resp.raise_for_status()
+                print(f"[WhatsApp Bulk Delete] Sent for job {job_id} to {number}: {resp.json()}")
+            except Exception as e:
+                print(f"[WhatsApp Bulk Delete] Failed for job {job_id} to {number}: {e}")
 
 def send_job_closed_notification(job):
     """Send Job Closed thank-you to customer + extra numbers.
@@ -1530,7 +1571,7 @@ def admin_update_job(job_id):
         db.commit()
 
         # Wait 10 seconds so the two WhatsApp messages don't arrive simultaneously
-        time.sleep(10)
+        time.sleep(3)
 
         # Send Job Closed notification to customer + both extra numbers
         job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -1603,6 +1644,51 @@ ALL_PERMISSIONS = {
     'dispatch_jobs':   'Dispatch Jobs',
     'view_reports':    'View Reports',
 }
+
+@app.route('/admin/jobs/bulk-delete', methods=['POST'])
+@admin_required
+def admin_bulk_delete_jobs():
+    db = get_db()
+
+    # ── Password verification ─────────────────────────────────────────────────
+    confirm_password = request.form.get('confirm_password', '').strip()
+    raw = request.form.get('job_ids', '')
+    job_ids = [j.strip() for j in raw.split(',') if j.strip()]
+
+    if not confirm_password:
+        flash('⚠️ Password is required for bulk deletion.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    if not job_ids:
+        flash('⚠️ No jobs selected for deletion.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    current_user = db.execute(
+        "SELECT * FROM users WHERE id=?", (session['user_id'],)
+    ).fetchone()
+    if not current_user or not check_password_hash(current_user['password'], confirm_password):
+        flash('❌ Incorrect password. Jobs were NOT deleted.', 'error')
+        return redirect(url_for('admin_jobs'))
+
+    # ── Fetch all job data BEFORE deleting (for WhatsApp notifications) ───────
+    placeholders = ','.join('?' * len(job_ids))
+    jobs_data = [
+        dict(row) for row in
+        db.execute(f"SELECT * FROM jobs WHERE job_id IN ({placeholders})", job_ids).fetchall()
+    ]
+
+    # ── Delete all selected jobs ───────────────────────────────────────────────
+    db.execute(f"DELETE FROM job_photos      WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM job_logs        WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM notifications   WHERE job_id IN ({placeholders})", job_ids)
+    db.execute(f"DELETE FROM jobs            WHERE job_id IN ({placeholders})", job_ids)
+    db.commit()
+
+    # ── Notify extra numbers for each deleted job ─────────────────────────────
+    _send_bulk_deleted_extra_notification(jobs_data)
+
+    flash(f'🗑️ {len(jobs_data)} job(s) deleted successfully.', 'success')
+    return redirect(url_for('admin_jobs'))
 
 @app.route('/admin/users')
 @admin_required

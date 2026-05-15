@@ -280,10 +280,14 @@
     </button>
     {% endif %}
 
-    {# ── Dispatch (after payment_received) ── #}
-    {% if job.status == 'payment_received' %}
+    {# ── Dispatch (after payment_received OR pay_later) ── #}
+    {% if job.status == 'payment_received' or (job.status == 'invoice_uploaded' and job.payment_method == 'pay_later') %}
     <div class="info-banner green">
-      💰 Payment confirmed. Ready to dispatch.
+      {% if job.payment_method == 'pay_later' %}
+        🕐 Pay Later selected. Ready to dispatch the item.
+      {% else %}
+        💰 Payment confirmed. Ready to dispatch.
+      {% endif %}
     </div>
     <button onclick="openModal('dispatchModal')" class="btn btn-primary" style="width:100%">
       🚚 Mark as Dispatched
@@ -729,13 +733,15 @@ function togglePmFields(val) {
   document.getElementById('pm_notes_group').style.display = (val === 'other')        ? 'block' : 'none';
 }
 
-/* ── Auto-open payment method modal if redirected from invoice upload ── */
+/* ── Auto-open modals if redirected from a previous action ── */
 (function() {
   const params = new URLSearchParams(window.location.search);
   if (params.get('open_payment_modal') === '1') {
-    // small delay so the page renders fully before modal opens
     setTimeout(function() { openModal('paymentMethodModal'); }, 350);
-    // clean up the URL so refresh doesn't re-open it
+    history.replaceState({}, '', window.location.pathname);
+  }
+  if (params.get('open_dispatch_modal') === '1') {
+    setTimeout(function() { openModal('dispatchModal'); }, 350);
     history.replaceState({}, '', window.location.pathname);
   }
 })();
