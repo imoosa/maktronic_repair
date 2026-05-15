@@ -1,0 +1,526 @@
+{% extends 'shared/base.html' %}
+{% block title %}Manager Dashboard — Maktronics{% endblock %}
+{% block page_title %}Manager Dashboard{% endblock %}
+{% block page_sub %}Overview of all repair jobs{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  {% if can_dashboard %}<a href="/manager" class="nav-item active"><span class="icon">📊</span> Dashboard</a>{% endif %}
+  {% if can_view_jobs %}<a href="/manager/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>{% endif %}
+  {% if can_create %}
+  <a href="/manager/jobs/new" class="nav-item"><span class="icon">➕</span> New Job</a>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block topbar_actions %}
+{% if can_create %}
+<a href="/manager/jobs/new" class="btn btn-primary">➕ New Job</a>
+{% endif %}
+{% endblock %}
+
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block head_styles %}
+/* ── TAB SYSTEM ── */
+.dash-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+  margin-bottom: 24px;
+  width: fit-content;
+}
+.dash-tab {
+  padding: 9px 22px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-body);
+}
+.dash-tab.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(255,107,43,.3);
+}
+.dash-tab:not(.active):hover {
+  background: var(--border);
+  color: var(--text);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── CHART CARDS ── */
+.charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-bottom: 20px;
+}
+@media(max-width:900px){ .charts-grid { grid-template-columns: 1fr; } }
+
+.chart-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+  transition: background .25s, border-color .25s;
+}
+.chart-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.chart-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+.chart-wrap { position: relative; height: 230px; }
+.chart-wrap.tall { height: 265px; }
+.chart-wrap.short { height: 185px; }
+
+/* ── REVENUE STRIP ── */
+.rev-strip {
+  display: flex;
+  gap: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 20px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  transition: background .25s;
+}
+.rev-cell {
+  flex: 1;
+  padding: 18px 22px;
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+.rev-cell:last-child { border-right: none; }
+.rev-cell::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--cell-color, var(--accent));
+}
+.rev-amount {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.rev-amount span { color: var(--cell-color, var(--accent)); }
+.rev-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  margin-top: 5px;
+}
+@media(max-width:700px){
+  .rev-strip { flex-direction: column; }
+  .rev-cell { border-right: none; border-bottom: 1px solid var(--border); }
+  .rev-cell:last-child { border-bottom: none; }
+}
+{% endblock %}
+
+{% block content %}
+
+<!-- TAB SWITCHER -->
+<div class="dash-tabs">
+  <button class="dash-tab active" onclick="switchTab('analytics')" id="tab-analytics">
+    📈 Analytics
+  </button>
+  <button class="dash-tab" onclick="switchTab('jobs')" id="tab-jobs">
+    🗂️ Jobs Table
+  </button>
+</div>
+
+<!-- ══════════════ ANALYTICS TAB ══════════════ -->
+<div class="tab-panel active" id="panel-analytics">
+
+  <!-- STAT CARDS -->
+  <div class="stats-grid">
+    <div class="stat-card" style="--accent-color:#64B5F6">
+      <div class="stat-icon">📦</div>
+      <div class="stat-value">{{ stats.total }}</div>
+      <div class="stat-label">Total Jobs</div>
+    </div>
+    <div class="stat-card" style="--accent-color:#F06292">
+      <div class="stat-icon">🔧</div>
+      <div class="stat-value">{{ stats.sent_for_repair }}</div>
+      <div class="stat-label">In Repair</div>
+    </div>
+    <div class="stat-card" style="--accent-color:#FF8A65">
+      <div class="stat-icon">💰</div>
+      <div class="stat-value">{{ stats.payment_pending }}</div>
+      <div class="stat-label">Awaiting Payment</div>
+    </div>
+    <div class="stat-card" style="--accent-color:#4DD0E1">
+      <div class="stat-icon">🚚</div>
+      <div class="stat-value">{{ stats.dispatched }}</div>
+      <div class="stat-label">Dispatched</div>
+    </div>
+    <div class="stat-card" style="--accent-color:#90A4AE">
+      <div class="stat-icon">🔒</div>
+      <div class="stat-value">{{ stats.closed }}</div>
+      <div class="stat-label">Closed</div>
+    </div>
+  </div>
+
+  <!-- REVENUE STRIP -->
+  <div class="rev-strip">
+    <div class="rev-cell" style="--cell-color:#FF6B2B">
+      <div class="rev-amount"><span>₹</span>{{ "%.0f"|format(analytics.total_revenue) }}</div>
+      <div class="rev-label">Total Revenue</div>
+    </div>
+    <div class="rev-cell" style="--cell-color:#3ECF8E">
+      <div class="rev-amount"><span>₹</span>{{ "%.0f"|format(analytics.paid_revenue) }}</div>
+      <div class="rev-label">Paid Revenue</div>
+    </div>
+    <div class="rev-cell" style="--cell-color:#64B5F6">
+      <div class="rev-amount"><span>₹</span>{{ "%.0f"|format(analytics.total_parts) }}</div>
+      <div class="rev-label">Parts Cost</div>
+    </div>
+    <div class="rev-cell" style="--cell-color:#CE93D8">
+      <div class="rev-amount"><span>₹</span>{{ "%.0f"|format(analytics.total_labour) }}</div>
+      <div class="rev-label">Labour Cost</div>
+    </div>
+  </div>
+
+  <!-- ROW 1: Status Donut + Tech Revenue -->
+  <div class="charts-grid">
+    <div class="chart-card">
+      <div class="chart-title">📊 Jobs by Status</div>
+      <div class="chart-sub">Current distribution across all statuses</div>
+      <div class="chart-wrap">
+        <canvas id="statusChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">👤 Revenue by Technician</div>
+      <div class="chart-sub">Total billed amount per technician</div>
+      <div class="chart-wrap">
+        <canvas id="techRevenueChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 2: Parts vs Labour stacked + Monthly trend -->
+  <div class="charts-grid">
+    <div class="chart-card">
+      <div class="chart-title">🔩 Parts vs Labour — Per Technician</div>
+      <div class="chart-sub">Stacked cost breakdown by technician</div>
+      <div class="chart-wrap tall">
+        <canvas id="partsLabourChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">📅 Monthly Jobs & Revenue</div>
+      <div class="chart-sub">Last 6 months trend</div>
+      <div class="chart-wrap tall">
+        <canvas id="monthlyChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROW 3: Item Types -->
+  <div class="chart-card" style="margin-bottom:20px">
+    <div class="chart-title">📱 Top Item Types</div>
+    <div class="chart-sub">Most common device types repaired</div>
+    <div class="chart-wrap short">
+      <canvas id="itemTypeChart"></canvas>
+    </div>
+  </div>
+
+</div>
+
+<!-- ══════════════ JOBS TABLE TAB ══════════════ -->
+<div class="tab-panel" id="panel-jobs">
+
+  <!-- Search bar -->
+  <div class="card mb-6" style="padding:14px 16px">
+    <form method="GET" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div class="form-group" style="margin:0;flex:1;min-width:160px">
+        <label class="form-label">Search</label>
+        <input type="text" name="search" class="form-control" placeholder="Job ID, customer, phone..." value="{{ search }}">
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <button type="submit" class="btn btn-primary" style="height:40px">🔍 Search</button>
+        <a href="/manager" class="btn btn-secondary" style="height:40px">Clear</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="table-wrap">
+    {% if jobs %}
+    <table>
+      <thead>
+        <tr>
+          <th>Job ID</th>
+          <th>Customer</th>
+          <th>Item</th>
+          <th>Technician</th>
+          <th>Status</th>
+          <th>Amount</th>
+          <th>Payment</th>
+          <th>Updated</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><code style="font-size:11px;color:var(--accent)">{{ job.job_id }}</code></td>
+          <td>
+            <div style="font-weight:500">{{ job.customer_name or '—' }}</div>
+            <div style="font-size:11px;color:var(--muted)">{{ job.customer_phone or '' }}</div>
+          </td>
+          <td>{{ job.item_type or '—' }}</td>
+          <td>{{ job.tech_name or '<span style="color:var(--muted)">—</span>'|safe }}</td>
+          <td>
+            {% set s = status_flow.get(job.status, {'label': job.status, 'icon': '•'}) %}
+            <span class="badge badge-{{ job.status }}">{{ s.icon }} {{ s.label }}</span>
+          </td>
+          <td>
+            {% if job.total_amount %}
+            <span style="color:var(--green);font-weight:600">₹{{ "%.0f"|format(job.total_amount) }}</span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if job.payment_status == 'paid' %}
+            <span style="font-size:11px;font-weight:600;color:var(--green)">✅ Paid</span>
+            {% else %}
+            <span style="font-size:11px;color:var(--muted)">Pending</span>
+            {% endif %}
+          </td>
+          <td style="font-size:11px;color:var(--muted)">{{ job.updated_at[:16] }}</td>
+          <td><a href="/manager/jobs/{{ job.job_id }}" class="btn btn-secondary btn-xs">View</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% elif search %}
+    <div class="empty-state">
+      <div class="empty-icon">🔍</div>
+      <div>No jobs found for <strong>{{ search }}</strong>.</div>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">📋</div>
+      <div>No jobs yet.
+        {% if can_create %}<a href="/manager/jobs/new" style="color:var(--accent)">Create the first one!</a>{% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ─── DATA FROM FLASK ─────────────────────────────────── */
+const STATUS_DATA  = {{ analytics.status_counts | tojson }};
+const TECH_DATA    = {{ analytics.tech_revenue   | tojson }};
+const MONTHLY_DATA = {{ analytics.monthly        | tojson }};
+const ITEM_DATA    = {{ analytics.item_types     | tojson }};
+
+/* ─── TAB LOGIC ───────────────────────────────────────── */
+function switchTab(id) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.dash-tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + id).classList.add('active');
+  document.getElementById('tab-' + id).classList.add('active');
+  if (id === 'analytics' && !window._chartsBuilt) buildCharts();
+}
+
+// Restore tab from URL param
+(function(){
+  const p = new URLSearchParams(location.search);
+  if (p.get('tab') === 'jobs' || p.get('search')) switchTab('jobs');
+})();
+
+/* ─── COLOUR PALETTE ──────────────────────────────────── */
+const PAL = ['#FF6B2B','#64B5F6','#F06292','#4DB6AC','#FFD54F',
+             '#FF8A65','#AED581','#4DD0E1','#81C784','#90A4AE','#CE93D8','#FFB74D'];
+
+/* ─── CHART HELPERS ───────────────────────────────────── */
+function themeVars() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    text    : s.getPropertyValue('--muted').trim()    || '#7A8099',
+    grid    : (document.documentElement.getAttribute('data-theme') === 'light')
+                ? 'rgba(0,0,0,.07)' : 'rgba(255,255,255,.05)',
+    cardBg  : s.getPropertyValue('--card').trim()     || '#1E2330',
+  };
+}
+
+let _charts = {};
+function destroyAll() { Object.values(_charts).forEach(c => { try{c.destroy()}catch(e){} }); _charts = {}; }
+
+function buildCharts() {
+  destroyAll();
+  const tv = themeVars();
+  Chart.defaults.color      = tv.text;
+  Chart.defaults.font.family = "'DM Sans', sans-serif";
+  Chart.defaults.font.size  = 12;
+
+  /* 1 ── Status Doughnut */
+  _charts.status = new Chart(document.getElementById('statusChart'), {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(STATUS_DATA).map(k => ({
+        received:'Received', photos_taken:'Photos', ocr_done:'OCR',
+        barcode_gen:'Barcode', in_repair:'In Repair', repair_done:'Repaired',
+        invoice_sent:'Invoice', payment_pending:'Awaiting Pay',
+        payment_done:'Paid', dispatched:'Dispatched',
+        delivered:'Delivered', closed:'Closed'
+      }[k] || k)),
+      datasets: [{
+        data: Object.values(STATUS_DATA),
+        backgroundColor: PAL,
+        borderColor: tv.cardBg,
+        borderWidth: 3,
+        hoverOffset: 8,
+      }]
+    },
+    options: {
+      cutout: '62%',
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position:'right', labels:{ boxWidth:10, padding:12, color:tv.text } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed}` } },
+      }
+    }
+  });
+
+  /* 2 ── Tech Revenue Bar */
+  _charts.techRev = new Chart(document.getElementById('techRevenueChart'), {
+    type: 'bar',
+    data: {
+      labels: TECH_DATA.map(t => t.name || 'Unassigned'),
+      datasets: [{
+        label: 'Revenue (₹)',
+        data: TECH_DATA.map(t => t.revenue),
+        backgroundColor: PAL.map(c => c + 'CC'),
+        borderColor: PAL,
+        borderWidth: 2,
+        borderRadius: 6,
+      }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display:false } },
+      scales: {
+        x: { grid:{color:tv.grid}, ticks:{color:tv.text} },
+        y: { grid:{color:tv.grid}, ticks:{color:tv.text, callback: v=>'₹'+Number(v).toLocaleString('en-IN')}, beginAtZero:true },
+      }
+    }
+  });
+
+  /* 3 ── Parts vs Labour Stacked */
+  _charts.pl = new Chart(document.getElementById('partsLabourChart'), {
+    type: 'bar',
+    data: {
+      labels: TECH_DATA.map(t => t.name || 'Unassigned'),
+      datasets: [
+        { label:'Parts',  data:TECH_DATA.map(t=>t.parts),  backgroundColor:'rgba(100,181,246,.8)', borderColor:'#64B5F6', borderWidth:1, borderRadius:4, stack:'s' },
+        { label:'Labour', data:TECH_DATA.map(t=>t.labour), backgroundColor:'rgba(255,107,43,.8)',  borderColor:'#FF6B2B', borderWidth:1, borderRadius:4, stack:'s' },
+      ]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend:{ position:'top', labels:{color:tv.text, boxWidth:12} } },
+      scales: {
+        x: { stacked:true, grid:{color:tv.grid}, ticks:{color:tv.text} },
+        y: { stacked:true, grid:{color:tv.grid}, ticks:{color:tv.text, callback:v=>'₹'+Number(v).toLocaleString('en-IN')}, beginAtZero:true },
+      }
+    }
+  });
+
+  /* 4 ── Monthly combo */
+  _charts.monthly = new Chart(document.getElementById('monthlyChart'), {
+    type: 'bar',
+    data: {
+      labels: MONTHLY_DATA.map(m => m.month),
+      datasets: [
+        { type:'bar',  label:'Jobs',       data:MONTHLY_DATA.map(m=>m.jobs),    backgroundColor:'rgba(77,208,225,.65)', borderColor:'#4DD0E1', borderWidth:1, borderRadius:5, yAxisID:'yJ' },
+        { type:'line', label:'Revenue (₹)',data:MONTHLY_DATA.map(m=>m.revenue), borderColor:'#FF6B2B', backgroundColor:'rgba(255,107,43,.1)', borderWidth:2, pointRadius:4, pointBackgroundColor:'#FF6B2B', tension:.35, fill:true, yAxisID:'yR' },
+      ]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend:{ position:'top', labels:{color:tv.text, boxWidth:12} } },
+      scales: {
+        x:  { grid:{color:tv.grid}, ticks:{color:tv.text} },
+        yJ: { position:'left',  grid:{color:tv.grid}, ticks:{color:tv.text}, beginAtZero:true, title:{display:true,text:'Jobs',color:tv.text} },
+        yR: { position:'right', grid:{drawOnChartArea:false}, ticks:{color:tv.text, callback:v=>'₹'+Number(v).toLocaleString('en-IN')}, beginAtZero:true, title:{display:true,text:'Revenue',color:tv.text} },
+      }
+    }
+  });
+
+  /* 5 ── Item Type Horizontal Bar */
+  _charts.items = new Chart(document.getElementById('itemTypeChart'), {
+    type: 'bar',
+    data: {
+      labels: ITEM_DATA.map(i => i.item_type || 'Unknown'),
+      datasets: [{
+        label:'Jobs',
+        data: ITEM_DATA.map(i => i.count),
+        backgroundColor: PAL.map(c=>c+'BB'),
+        borderColor: PAL,
+        borderWidth: 1,
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      maintainAspectRatio: false,
+      plugins: { legend:{display:false} },
+      scales: {
+        x: { grid:{color:tv.grid}, ticks:{color:tv.text}, beginAtZero:true },
+        y: { grid:{color:'transparent'}, ticks:{color:tv.text} },
+      }
+    }
+  });
+
+  window._chartsBuilt = true;
+}
+
+/* Rebuild charts when theme changes */
+window.onThemeChange = function() {
+  if(window._chartsBuilt) {
+    window._chartsBuilt = false;
+    buildCharts();
+  }
+};
+
+/* Build on load (analytics is default tab) */
+document.addEventListener('DOMContentLoaded', buildCharts);
+</script>
+{% endblock %}

@@ -1,0 +1,201 @@
+{% extends 'shared/base.html' %}
+{% block title %}New Job — Maktronics{% endblock %}
+{% block page_title %}New Job{% endblock %}
+{% block page_sub %}Register a new repair item{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  {% if can_dashboard %}<a href="/manager" class="nav-item"><span class="icon">📊</span> Dashboard</a>{% endif %}
+  {% if can_view_jobs %}<a href="/manager/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>{% endif %}
+  <a href="/manager/jobs/new" class="nav-item active"><span class="icon">➕</span> New Job</a>
+</div>
+{% endblock %}
+
+{% block bn_jobs %}active{% endblock %}
+
+{% block head_styles %}
+/* Sticky submit bar on mobile */
+.form-submit-bar{
+  display:flex;gap:12px;margin-top:4px;
+}
+@media(max-width:640px){
+  .form-submit-bar{
+    position:fixed;bottom:var(--bottom-nav-h,64px);left:0;right:0;
+    background:var(--bg2);border-top:1px solid var(--border);
+    padding:12px 14px;margin:0;z-index:90;gap:8px;
+    padding-bottom:calc(12px + env(safe-area-inset-bottom));
+  }
+  .form-submit-bar .btn{flex:1;justify-content:center}
+  /* add padding to keep form above sticky bar */
+  #new-job-form{padding-bottom:90px}
+}
+{% endblock %}
+
+{% block content %}
+<div style="max-width:680px" id="new-job-form">
+<form method="POST" enctype="multipart/form-data">
+
+  <!-- Customer Details -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">📋 Customer Details</span>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Customer Name *</label>
+        <input type="text" name="customer_name" class="form-control" placeholder="Full name" required autocomplete="name">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Phone Number *</label>
+        <input type="tel" name="customer_phone" class="form-control" placeholder="+91 98765 43210" required autocomplete="tel" inputmode="tel">
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Email Address</label>
+      <input type="email" name="customer_email" class="form-control" placeholder="customer@email.com" autocomplete="email" inputmode="email">
+    </div>
+  </div>
+
+  <!-- Item Details -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">🔧 Item Details</span>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Item Type *</label>
+        <input type="text" name="item_type" class="form-control" placeholder="e.g. Mobile Phone, Laptop, TV..." required>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Assign Technician</label>
+        <select name="assigned_tech_id" class="form-control">
+          <option value="">Unassigned</option>
+          {% for tech in technicians %}
+          <option value="{{ tech.id }}">{{ tech.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Item Description / Problem *</label>
+      <textarea name="item_description" class="form-control" rows="3" placeholder="Describe the item and the problem reported by customer..." required></textarea>
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Additional Notes</label>
+      <textarea name="notes" class="form-control" rows="2" placeholder="Any special instructions or observations..."></textarea>
+    </div>
+  </div>
+
+  <!-- Photos -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <span class="card-title">📸 Item Photos</span>
+      <span id="photo-count-tag" class="tag" style="display:none"></span>
+      <button type="button" id="add-photo-btn" onclick="document.getElementById('photo-file-input').click()" class="btn btn-secondary btn-sm" style="display:none">+ Add</button>
+    </div>
+
+    <!-- Initial upload area (visible before first photo is chosen) -->
+    <div id="photo-upload-area" class="form-group" style="margin-bottom:8px">
+      <label class="form-label">Capture / Upload Photos <span style="color:var(--muted);font-weight:400">(up to 3)</span></label>
+      <input type="file" id="photo-file-input" name="photos" multiple accept="image/*" capture="environment" style="padding:8px 12px" class="form-control">
+    </div>
+
+    <!-- Thumbnails appear here -->
+    <div id="preview-grid" class="photo-grid" style="margin-top:8px"></div>
+  </div>
+
+  <!-- Submit -->
+  <div class="form-submit-bar">
+    <button type="submit" class="btn btn-primary">📦 Create Job &amp; Generate ID</button>
+    <a href="/manager/jobs" class="btn btn-secondary">Cancel</a>
+  </div>
+
+</form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const MAX = 3;
+
+  const dt = new DataTransfer();
+
+  const input      = document.getElementById('photo-file-input');
+  const grid       = document.getElementById('preview-grid');
+  const uploadArea = document.getElementById('photo-upload-area');
+  const addBtn     = document.getElementById('add-photo-btn');
+  const countTag   = document.getElementById('photo-count-tag');
+
+  function updateUI() {
+    const count = dt.files.length;
+    if (count === 0) {
+      uploadArea.style.display = '';
+      addBtn.style.display     = 'none';
+      countTag.style.display   = 'none';
+    } else {
+      uploadArea.style.display = 'none';
+      addBtn.style.display     = count < MAX ? '' : 'none';
+      countTag.style.display   = '';
+      countTag.textContent     = count + ' / ' + MAX;
+    }
+    input.files = dt.files;
+  }
+
+  function rebuildPreviews() {
+    grid.innerHTML = '';
+    Array.from(dt.files).forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:relative';
+
+        const img = document.createElement('img');
+        img.src       = ev.target.result;
+        img.className = 'photo-thumb';
+        img.title     = file.name;
+
+        const rm = document.createElement('button');
+        rm.type      = 'button';
+        rm.textContent = '✕';
+        rm.setAttribute('aria-label', 'Remove photo');
+        rm.style.cssText =
+          'position:absolute;top:4px;right:4px;' +
+          'width:20px;height:20px;border-radius:50%;border:none;' +
+          'background:rgba(0,0,0,.6);color:#fff;font-size:11px;' +
+          'cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0';
+        rm.onclick = () => removePhoto(idx);
+
+        wrap.appendChild(img);
+        wrap.appendChild(rm);
+        grid.appendChild(wrap);
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function removePhoto(idx) {
+    const newDt = new DataTransfer();
+    Array.from(dt.files).forEach((f, i) => { if (i !== idx) newDt.items.add(f); });
+    dt.items.clear();
+    Array.from(newDt.files).forEach(f => dt.items.add(f));
+    rebuildPreviews();
+    updateUI();
+  }
+
+  input.addEventListener('change', function () {
+    const available = MAX - dt.files.length;
+    Array.from(this.files).slice(0, available).forEach(f => {
+      const isDupe = Array.from(dt.files).some(e => e.name === f.name && e.size === f.size);
+      if (!isDupe) dt.items.add(f);
+    });
+    this.value = '';
+    rebuildPreviews();
+    updateUI();
+  });
+
+  updateUI();
+})();
+</script>
+{% endblock %}
