@@ -2531,15 +2531,6 @@ def test_whatsapp(job_id):
 def migrate_db():
     """Add any missing columns to existing databases (safe to run repeatedly)."""
     with get_db() as db:
-        # ── SAFETY: drop any stale triggers that reference users_old ──────────
-        triggers = db.execute(
-            "SELECT name, sql FROM sqlite_master WHERE type='trigger'"
-        ).fetchall()
-        for t in triggers:
-            if t['sql'] and 'users_old' in t['sql']:
-                db.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-                print(f"[migrate_db] Dropped stale trigger referencing users_old: {t['name']}")
-        db.commit()
 
         # ── RECOVERY: fix broken state from a previously interrupted table swap ──
         # If users_old exists but users does not, the last migration crashed halfway.
