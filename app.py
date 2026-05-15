@@ -35,8 +35,8 @@ ACCOUNTS_WHATSAPP_NUMBER = os.environ.get('ACCOUNTS_WHATSAPP_NUMBER', '918551872
 # These two numbers receive copies of Job Created, Sent for Repair, and Job Closed
 # notifications (in addition to the customer).
 # Format: 91XXXXXXXXXX  (country code + 10-digit number, no spaces/dashes)
-EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '918237417253')  # ← replace with real number
-EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919730667697')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_1 = os.environ.get('EXTRA_NOTIFY_NUMBER_1', '917045015352')  # ← replace with real number
+EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919820009043')  # ← replace with real number
 
 # ─── PUBLIC BASE URL ──────────────────────────────────────────────────────────
 # AiSensy must reach your server from the internet to fetch media (PDF invoices).
