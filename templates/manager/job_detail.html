@@ -153,6 +153,15 @@
 
 {% block content %}
 
+
+{# ── WhatsApp status booleans ─────────────────────────────────────────────── #}
+{% set wa_job_created   = true %}
+{% set wa_estimate_sent = job.status in ['estimate_sent','estimate_approved','estimate_rejected','sent_for_repair','repair_done','invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_repair_start  = job.status in ['sent_for_repair','repair_done','invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_invoice_sent  = job.status in ['invoice_uploaded','payment_received','dispatched','closed'] %}
+{% set wa_payment_recv  = job.status in ['payment_received','dispatched','closed'] %}
+{% set wa_dispatched    = job.status in ['dispatched','closed'] %}
+{% set wa_closed        = job.status == 'closed' %}
 <!-- ═══ 1. REPAIR JOURNEY ═══════════════════════════════════════════════════ -->
 {% set STATUS_ORDER = status_order %}
 {% set step_idx = STATUS_ORDER.index(job.status) if job.status in STATUS_ORDER else -1 %}
