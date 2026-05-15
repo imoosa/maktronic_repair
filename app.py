@@ -1639,6 +1639,360 @@ def admin_backup_restore():
         flash(f'Restore failed: {str(e)}', 'error')
     return redirect(url_for('admin_backup_page'))
 
+# ─── MANAGER ROUTES ───────────────────────────────────────────────────────────
+
+@app.route('/manager')
+@manager_required
+def manager_dashboard():
+    # Block managers who don't have view_dashboard permission
+    if not has_permission('view_dashboard'):
+        flash('You do not have permission to access the dashboard.', 'error')
+        if has_permission('view_all_jobs'):
+            return redirect(url_for('manager_jobs'))
+        return redirect(url_for('logout'))
+
+    db = get_db()
+    search = request.args.get('search', '').strip()
+
+    # Managers see all jobs (same as admin)
+    stats = {
+        'total':           db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+        'sent_for_repair': db.execute("SELECT COUNT(*) FROM jobs WHERE status='sent_for_repair'").fetchone()[0],
+        'payment_pending': db.execute("SELECT COUNT(*) FROM jobs WHERE payment_status='pending' AND status='invoice_uploaded'").fetchone()[0],
+        'dispatched':      db.execute("SELECT COUNT(*) FROM jobs WHERE status='dispatched'").fetchone()[0],
+        'closed':          db.execute("SELECT COUNT(*) FROM jobs WHERE status='closed'").fetchone()[0],
+    }
+
+    rev_row = db.execute("""
+        SELECT
+            COALESCE(SUM(total_amount), 0) AS total_revenue,
+            COALESCE(SUM(parts_cost), 0) AS total_parts,
+            COALESCE(SUM(labour_cost), 0) AS total_labour,
+            COALESCE(SUM(CASE WHEN payment_status='paid' THEN total_amount ELSE 0 END), 0) AS paid_revenue
+        FROM jobs
+    """).fetchone()
+
+    status_rows = db.execute("SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status").fetchall()
+    status_counts = {r['status']: r['cnt'] for r in status_rows}
+
+    monthly_rows = db.execute("""
+        SELECT strftime('%Y-%m', received_at) AS month,
+               COUNT(*) AS jobs,
+               COALESCE(SUM(total_amount), 0) AS revenue
+        FROM jobs
+        WHERE received_at >= date('now', '-6 months')
+        GROUP BY month ORDER BY month
+    """).fetchall()
+
+    tech_revenue_rows = db.execute("""
+        SELECT COALESCE(u.name, 'Unassigned') AS name,
+               COALESCE(SUM(j.total_amount), 0) AS revenue,
+               COALESCE(SUM(j.parts_cost), 0)   AS parts,
+               COALESCE(SUM(j.labour_cost), 0)  AS labour
+        FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        GROUP BY j.assigned_tech_id
+        ORDER BY revenue DESC
+    """).fetchall()
+
+    item_type_rows = db.execute("""
+        SELECT COALESCE(item_type, 'Unknown') AS item_type, COUNT(*) AS count
+        FROM jobs
+        GROUP BY item_type
+        ORDER BY count DESC
+        LIMIT 10
+    """).fetchall()
+
+    analytics = {
+        'total_revenue': rev_row['total_revenue'],
+        'total_parts':   rev_row['total_parts'],
+        'total_labour':  rev_row['total_labour'],
+        'paid_revenue':  rev_row['paid_revenue'],
+        'status_counts': status_counts,
+        'monthly':       [dict(r) for r in monthly_rows],
+        'tech_revenue':  [dict(r) for r in tech_revenue_rows],
+        'item_types':    [dict(r) for r in item_type_rows],
+    }
+
+    if search:
+        recent_jobs = db.execute("""
+            SELECT j.*, u.name as tech_name FROM jobs j
+            LEFT JOIN users u ON j.assigned_tech_id = u.id
+            WHERE j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?
+            ORDER BY j.received_at DESC LIMIT 50
+        """, (f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%')).fetchall()
+    else:
+        recent_jobs = db.execute("""
+            SELECT j.*, u.name as tech_name FROM jobs j
+            LEFT JOIN users u ON j.assigned_tech_id = u.id
+            ORDER BY j.received_at DESC LIMIT 20
+        """).fetchall()
+
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    can_create = has_permission('create_jobs')
+    return render_template('manager/dashboard.html', stats=stats, jobs=recent_jobs,
+                           technicians=technicians, status_flow=STATUS_FLOW,
+                           search=search, analytics=analytics, can_create=can_create,
+                           can_view_jobs=has_permission('view_all_jobs'),
+                           can_dashboard=has_permission('view_dashboard'))
+
+
+@app.route('/manager/jobs')
+@manager_required
+def manager_jobs():
+    if not has_permission('view_all_jobs'):
+        flash('You do not have permission to view all jobs.', 'error')
+        if has_permission('view_dashboard'):
+            return redirect(url_for('manager_dashboard'))
+        return redirect(url_for('logout'))
+
+    db = get_db()
+    status_filter = request.args.get('status', '')
+    search = request.args.get('search', '')
+    query = """
+        SELECT j.*, u.name as tech_name FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE 1=1
+    """
+    params = []
+    if status_filter:
+        query += " AND j.status=?"
+        params.append(status_filter)
+    if search:
+        query += " AND (j.job_id LIKE ? OR j.barcode LIKE ? OR j.customer_name LIKE ? OR j.customer_phone LIKE ?)"
+        params.extend([f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'])
+    query += " ORDER BY j.received_at DESC"
+    jobs = db.execute(query, params).fetchall()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    can_create = has_permission('create_jobs')
+    return render_template('manager/jobs.html', jobs=jobs, status_flow=STATUS_FLOW,
+                           technicians=technicians, status_filter=status_filter,
+                           search=search, can_create=can_create,
+                           can_delete=has_permission('delete_jobs'),
+                           can_dashboard=has_permission('view_dashboard'),
+                           can_view_jobs=True)
+
+
+@app.route('/manager/jobs/new', methods=['GET', 'POST'])
+@manager_required
+def manager_new_job():
+    if not has_permission('create_jobs'):
+        flash('You do not have permission to create jobs.', 'error')
+        return redirect(url_for('manager_dashboard'))
+
+    if request.method == 'POST':
+        db = get_db()
+        job_id = generate_job_id()
+        barcode = job_id
+        tech_id = request.form.get('assigned_tech_id') or None
+
+        data = {
+            'job_id': job_id,
+            'customer_name': request.form.get('customer_name'),
+            'customer_phone': request.form.get('customer_phone'),
+            'customer_email': request.form.get('customer_email'),
+            'item_description': request.form.get('item_description'),
+            'item_type': request.form.get('item_type'),
+            'barcode': barcode,
+            'assigned_tech_id': tech_id,
+            'status': 'sent_for_inspection',
+            'notes': request.form.get('notes'),
+        }
+        db.execute("""
+            INSERT INTO jobs (job_id, customer_name, customer_phone, customer_email,
+            item_description, item_type, barcode, assigned_tech_id, status, notes)
+            VALUES (:job_id,:customer_name,:customer_phone,:customer_email,
+            :item_description,:item_type,:barcode,:assigned_tech_id,:status,:notes)
+        """, data)
+
+        photos = request.files.getlist('photos')
+        for photo in photos[:3]:
+            if photo and allowed_file(photo.filename):
+                filename = secure_filename(f"{job_id}_{uuid.uuid4().hex[:6]}_{photo.filename}")
+                photo.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
+                           (job_id, filename))
+
+        log_action(db, job_id, 'Job Created by Manager & Sent for Inspection', session['user_id'],
+                   f"Customer: {data['customer_name']}")
+        send_job_created_notification(dict(data))
+
+        if tech_id:
+            send_notification(
+                db, tech_id, job_id,
+                f"📦 New job {job_id} assigned to you for inspection. "
+                f"Customer: {data['customer_name']} | Item: {data['item_type']}"
+            )
+
+        db.commit()
+        flash(f'Job {job_id} created! WhatsApp notification sent to customer.', 'success')
+        return redirect(url_for('manager_job_detail', job_id=job_id))
+
+    db = get_db()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    return render_template('manager/new_job.html', technicians=technicians,
+                           can_dashboard=has_permission('view_dashboard'),
+                           can_view_jobs=has_permission('view_all_jobs'))
+
+
+@app.route('/manager/jobs/<job_id>')
+@manager_required
+def manager_job_detail(job_id):
+    db = get_db()
+    job = db.execute("""
+        SELECT j.*, u.name as tech_name FROM jobs j
+        LEFT JOIN users u ON j.assigned_tech_id = u.id
+        WHERE j.job_id=?
+    """, (job_id,)).fetchone()
+    if not job:
+        flash('Job not found', 'error')
+        return redirect(url_for('manager_jobs'))
+    photos = db.execute("SELECT * FROM job_photos WHERE job_id=?", (job_id,)).fetchall()
+    logs = db.execute("""
+        SELECT l.*, u.name as user_name FROM job_logs l
+        LEFT JOIN users u ON l.performed_by = u.id
+        WHERE l.job_id=? ORDER BY l.created_at DESC
+    """, (job_id,)).fetchall()
+    technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
+    perms = {
+        'can_edit':            has_permission('edit_jobs'),
+        'can_delete':          has_permission('delete_jobs'),
+        'can_upload_invoice':  has_permission('upload_invoice'),
+        'can_manage_payments': has_permission('manage_payments'),
+        'can_dispatch':        has_permission('dispatch_jobs'),
+    }
+    return render_template('manager/job_detail.html', job=job, photos=photos,
+                           logs=logs, technicians=technicians,
+                           status_flow=STATUS_FLOW, status_order=STATUS_ORDER,
+                           can_dashboard=has_permission('view_dashboard'),
+                           can_view_jobs=has_permission('view_all_jobs'),
+                           **perms)
+
+
+@app.route('/manager/jobs/<job_id>/update', methods=['POST'])
+@manager_required
+def manager_update_job(job_id):
+    """Managers can update jobs they have permission for.
+    Delegates to the same logic as admin_update_job but checks permissions."""
+    db = get_db()
+    action = request.form.get('action')
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    tech_id = get_assigned_tech_id(db, job_id)
+
+    # Permission gate per action
+    action_perm_map = {
+        'assign_tech':              'edit_jobs',
+        'approve_estimate':         'edit_jobs',
+        'reject_estimate':          'edit_jobs',
+        'upload_invoice_and_send':  'upload_invoice',
+        'confirm_payment_method':   'manage_payments',
+        'payment_received':         'manage_payments',
+        'dispatch':                 'dispatch_jobs',
+        'close':                    'edit_jobs',
+    }
+    required_perm = action_perm_map.get(action, 'edit_jobs')
+    if not has_permission(required_perm):
+        flash(f'You do not have permission to perform this action ({action}).', 'error')
+        return redirect(url_for('manager_job_detail', job_id=job_id))
+
+    # ── Assign technician ────────────────────────────────────────────────────
+    if action == 'assign_tech':
+        new_tech_id = request.form.get('tech_id')
+        db.execute("UPDATE jobs SET assigned_tech_id=?, updated_at=? WHERE job_id=?",
+                   (new_tech_id, now, job_id))
+        tech = db.execute("SELECT name FROM users WHERE id=?", (new_tech_id,)).fetchone()
+        log_action(db, job_id, f'Assigned to {tech["name"]}', session['user_id'])
+        if new_tech_id:
+            send_notification(db, new_tech_id, job_id,
+                              f"📋 Job {job_id} has been assigned to you for inspection.")
+        db.commit()
+        flash('Technician assigned!', 'success')
+
+    elif action == 'approve_estimate':
+        db.execute("""
+            UPDATE jobs SET status='estimate_approved', estimate_approved_at=?, updated_at=?
+            WHERE job_id=?
+        """, (now, now, job_id))
+        log_action(db, job_id, 'Estimate Approved by Manager', session['user_id'])
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_approved_confirmation(dict(job))
+        db.execute("UPDATE jobs SET status='sent_for_repair', updated_at=? WHERE job_id=?", (now, job_id))
+        log_action(db, job_id, 'Status → sent_for_repair', session['user_id'])
+        job_for_extras = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        _send_repair_started_extra_notification(dict(job_for_extras))
+        if tech_id:
+            send_notification(db, tech_id, job_id,
+                              f"✅ Estimate approved for job {job_id}. Please proceed with the repair.")
+        db.commit()
+        flash('Estimate approved — job sent for repair and customer notified!', 'success')
+
+    elif action == 'reject_estimate':
+        reason = request.form.get('rejection_reason', '')
+        db.execute("UPDATE jobs SET status='estimate_rejected', notes=?, updated_at=? WHERE job_id=?",
+                   (reason, now, job_id))
+        log_action(db, job_id, 'Estimate Rejected by Manager', session['user_id'], reason)
+        job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        send_estimate_rejected_confirmation(dict(job))
+        if tech_id:
+            send_notification(db, tech_id, job_id,
+                              f"🚫 Estimate for job {job_id} was rejected. Reason: {reason}")
+        db.commit()
+        flash('Estimate rejected and customer notified.', 'success')
+
+    elif action == 'close':
+        db.execute("UPDATE jobs SET status='closed', updated_at=? WHERE job_id=?", (now, job_id))
+        log_action(db, job_id, 'Job Closed by Manager', session['user_id'])
+        db.commit()
+        job_closed = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        if job_closed:
+            send_job_closed_notification(dict(job_closed))
+        flash('Job closed and customer notified via WhatsApp! 🔒', 'success')
+
+    else:
+        flash('Action not supported for manager.', 'error')
+
+    return redirect(url_for('manager_job_detail', job_id=job_id))
+
+
+@app.route('/manager/jobs/<job_id>/delete', methods=['POST'])
+@manager_required
+def manager_delete_job(job_id):
+    if not has_permission('delete_jobs'):
+        flash('You do not have permission to delete jobs.', 'error')
+        return redirect(url_for('manager_job_detail', job_id=job_id))
+
+    db = get_db()
+
+    # ── Require the ADMIN password (not the manager's own password) ───────────
+    confirm_password = request.form.get('confirm_password', '').strip()
+    if not confirm_password:
+        flash('⚠️ Admin password is required to delete a job.', 'error')
+        return redirect(url_for('manager_job_detail', job_id=job_id))
+
+    admin_user = db.execute(
+        "SELECT * FROM users WHERE role='admin' ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+    if not admin_user or not check_password_hash(admin_user['password'], confirm_password):
+        flash('❌ Incorrect admin password. Job was NOT deleted.', 'error')
+        return redirect(url_for('manager_job_detail', job_id=job_id))
+
+    # ── Fetch job info before deleting (for WhatsApp notification) ────────────
+    job = db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    job_data = dict(job) if job else {}
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+    db.execute("DELETE FROM job_photos WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM job_logs WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM notifications WHERE job_id=?", (job_id,))
+    db.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+    db.commit()
+
+    # ── Notify extra numbers via WhatsApp ─────────────────────────────────────
+    _send_job_deleted_extra_notification(job_data, deleted_by=session.get('name', 'Manager'))
+
+    flash(f'🗑️ Job {job_id} deleted successfully.', 'success')
+    return redirect(url_for('manager_jobs'))
+
 # ─── TECHNICIAN ROUTES ────────────────────────────────────────────────────────
 @app.route('/tech')
 @login_required
