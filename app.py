@@ -682,6 +682,8 @@ def index():
     if 'user_id' in session:
         if session['role'] == 'admin':
             return redirect(url_for('admin_dashboard'))
+        elif session['role'] == 'manager':
+            return redirect(url_for('manager_dashboard'))
         return redirect(url_for('tech_dashboard'))
     return redirect(url_for('login'))
 
