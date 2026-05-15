@@ -1667,7 +1667,8 @@ def admin_bulk_delete_jobs():
     # ── Notify extra numbers for each deleted job ─────────────────────────────
     _send_bulk_deleted_extra_notification(jobs_data)
 
-    flash(f'🗑️ {len(jobs_data)} job(s) 
+    flash(f'🗑️ {len(jobs_data)} job(s) deleted successfully.', 'success')
+    return redirect(url_for('admin_jobs'))
 
 @app.route('/admin/users')
 @admin_required
