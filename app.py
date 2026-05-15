@@ -44,6 +44,23 @@ EXTRA_NOTIFY_NUMBER_2 = os.environ.get('EXTRA_NOTIFY_NUMBER_2', '919730667697') 
 #   Local dev:   export PUBLIC_BASE_URL=https://abc123.ngrok.io  (use ngrok)
 PUBLIC_BASE_URL = os.environ.get('PUBLIC_BASE_URL', 'https://maktronic-repair-3.onrender.com').rstrip('/')
 
+@app.before_request
+def check_user_exists():
+    """Check if logged-in user still exists in database on every request"""
+    # Skip for login, logout, static files, and payment pages
+    if request.endpoint in ['login', 'logout', 'static', 'customer_pay', 'verify_payment', 'payment_success', 'razorpay_webhook', 'whatsapp_webhook']:
+        return None
+    
+    if 'user_id' in session:
+        db = get_db()
+        user = db.execute("SELECT id FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        if not user:
+            # User deleted - clear session and redirect to login
+            session.clear()
+            flash('Your session has expired. Please login again.', 'error')
+            return redirect(url_for('login'))
+    return None
+
 def build_public_url(path):
     """Return a publicly accessible URL. path must start with '/'.
     Returns None if PUBLIC_BASE_URL is not set (media attachment skipped)."""
@@ -642,20 +659,6 @@ def login_required(f):
     def decorated(*args, **kwargs):
         if 'user_id' not in session:
             return redirect(url_for('login'))
-        
-        # ✅ SIMPLE FIX: Verify user still exists in database
-        db = get_db()
-        user = db.execute("SELECT id, role, name FROM users WHERE id=?", (session['user_id'],)).fetchone()
-        if not user:
-            # User was deleted - clear session and redirect to login
-            session.clear()
-            flash('Your account has been deleted. Please contact admin.', 'error')
-            return redirect(url_for('login'))
-        
-        # Update session in case role changed
-        session['role'] = user['role']
-        session['name'] = user['name']
-        
         return f(*args, **kwargs)
     return decorated
 
@@ -678,10 +681,6 @@ def manager_required(f):
         if session.get('role') not in ('admin', 'manager'):
             flash('Manager access required.', 'error')
             return redirect(url_for('tech_dashboard'))
-        # Check if manager has permission to view dashboard
-        if request.endpoint == 'manager_dashboard' and not has_permission('view_dashboard'):
-            flash('You do not have permission to access the dashboard.', 'error')
-            return redirect(url_for('manager_jobs'))
         return f(*args, **kwargs)
     return decorated
 
