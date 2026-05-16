@@ -693,6 +693,50 @@ def has_permission(perm):
     perms = session.get('permissions', {})
     return bool(perms.get(perm, False))    
 
+import qrcode
+from io import BytesIO
+import base64
+
+@app.route('/api/job/<job_id>/qrcode')
+@login_required
+def get_job_qrcode(job_id):
+    """Generate QR code for a job that links to the job detail page"""
+    db = get_db()
+    job = db.execute("SELECT job_id FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    # Build the URL to the job detail page
+    role = session.get('role')
+    if role == 'admin':
+        detail_url = url_for('admin_job_detail', job_id=job_id, _external=True)
+    elif role == 'manager':
+        detail_url = url_for('manager_job_detail', job_id=job_id, _external=True)
+    else:
+        detail_url = url_for('tech_job_detail', job_id=job_id, _external=True)
+    
+    # Generate QR code
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(detail_url)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convert to base64 for embedding in HTML
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    
+    return jsonify({
+        'qr_code': f'data:image/png;base64,{img_str}',
+        'job_url': detail_url
+    })
+
 # ─── WHATSAPP WEBHOOK (Handles YES/NO replies) ───────────────────────────────
 @app.route('/whatsapp/webhook', methods=['POST'])
 def whatsapp_webhook():
