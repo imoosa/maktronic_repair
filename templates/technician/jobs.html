@@ -33,8 +33,49 @@
     <div style="display:flex;gap:8px">
       <button type="submit" class="btn btn-primary" style="height:40px">🔍</button>
       <a href="/tech/jobs" class="btn btn-secondary" style="height:40px">Clear</a>
+       <!-- ✅ ADD SCANNER BUTTON HERE -->
+  <button type="button" onclick="openScannerModal()" class="btn btn-primary" 
+          style="height:40px;display:flex;align-items:center;gap:6px;background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);border:none">
+    📷 Scan QR
+  </button>
     </div>
   </form>
+</div>
+<!-- ═══ QR CODE SCANNER MODAL (Working Version) ═══════════════════════════════ -->
+<div id="scannerModal" style="display:none; position:fixed; inset:0; z-index:1001; background:rgba(0,0,0,0.85); align-items:flex-start; justify-content:center; overflow-y:auto; backdrop-filter: blur(4px);">
+  <div style="background: var(--card); border-radius: 28px; width: 95%; max-width: 550px; margin: 20px; overflow-y: auto; max-height: 95vh; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);">
+    
+    <div style="padding: 20px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <div style="font-size: 22px; font-weight: 700;">Scan QR Code</div>
+          <div style="font-size: 13px; opacity: 0.9; margin-top: 4px;">Position the code in front of camera</div>
+        </div>
+        <button onclick="closeScannerModal()" style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; font-size: 24px; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+          ✕
+        </button>
+      </div>
+    </div>
+    
+    <div style="padding: 24px;">
+      <div id="scanner-video-container" style="position: relative; background: #000; border-radius: 20px; overflow: hidden; min-height: 350px;">
+        <video id="scanner-video" style="width: 100%; border-radius: 20px; background: #000;"></video>
+        <canvas id="scanner-canvas" style="display:none"></canvas>
+        <div id="scanner-guide" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 70%; height: 70%; border: 2px solid rgba(102, 126, 234, 0.6); border-radius: 16px; box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2); pointer-events: none;"></div>
+      </div>
+      
+      <div id="scanner-result" style="margin-top: 16px; padding: 14px; border-radius: 16px; display: none;"></div>
+      
+      <div class="info-banner blue" style="margin-top: 20px; padding: 12px; text-align: center; font-size: 12px; border-radius: 16px;">
+        💡 Tip: Ensure good lighting and hold the QR code steady
+      </div>
+    </div>
+    
+    <div style="padding: 16px 24px; border-top: 1px solid var(--border); display: flex; gap: 12px; justify-content: flex-end; background: var(--bg2);">
+      <button onclick="stopScanner()" class="btn btn-secondary" style="padding: 8px 20px;">Stop</button>
+      <button onclick="restartScanner()" class="btn btn-primary" style="padding: 8px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none;">Restart</button>
+    </div>
+  </div>
 </div>
 
 <!-- TABLE (tablet/desktop) -->
@@ -109,4 +150,245 @@
   </div>
   {% endif %}
 </div>
+
+<!-- ✅ html5-qrcode: actively maintained, no CDN issues, works on mobile & desktop -->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+<script>
+/* ── Export dropdown ─────────────────────────────────────────────────────── */
+function toggleExportDropdown(e) {
+  e.stopPropagation();
+  var menu = document.getElementById('exportDropdownMenu');
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+document.addEventListener('click', function() {
+  var menu = document.getElementById('exportDropdownMenu');
+  if (menu) menu.style.display = 'none';
+});
+
+/* ── Single delete modal ─────────────────────────────────────────────────── */
+function openDeleteModal(jobId, customerName) {
+  document.getElementById('deleteJobId').textContent = jobId;
+  document.getElementById('deleteJobCustomer').textContent = customerName || '—';
+  document.getElementById('deleteJobForm').action = '/admin/jobs/' + jobId + '/delete';
+  document.getElementById('deletePasswordInput').value = '';
+  var modal = document.getElementById('deleteJobModal');
+  modal.style.display = 'flex';
+  setTimeout(function() { document.getElementById('deletePasswordInput').focus(); }, 100);
+}
+function closeDeleteModal() {
+  document.getElementById('deleteJobModal').style.display = 'none';
+  document.getElementById('deletePasswordInput').value = '';
+}
+document.getElementById('deleteJobModal').addEventListener('click', function(e) {
+  if (e.target === this) closeDeleteModal();
+});
+
+/* ── Checkbox & bulk selection ───────────────────────────────────────────── */
+function getSelectedIds() {
+  return Array.from(document.querySelectorAll('.job-checkbox:checked'))
+    .map(cb => cb.value)
+    .filter((v, i, arr) => arr.indexOf(v) === i);
+}
+
+function updateBulkBar() {
+  var ids = getSelectedIds();
+  var bar = document.getElementById('bulkActionBar');
+  document.getElementById('selectedCount').textContent = ids.length;
+  bar.style.display = ids.length > 0 ? 'flex' : 'none';
+  var allBoxes = document.querySelectorAll('.job-checkbox:not(.job-checkbox-mobile)');
+  var selectAll = document.getElementById('selectAllCheckbox');
+  if (selectAll) {
+    selectAll.checked = allBoxes.length > 0 && ids.length >= allBoxes.length;
+    selectAll.indeterminate = ids.length > 0 && ids.length < allBoxes.length;
+  }
+}
+
+function toggleSelectAll(master) {
+  var allBoxes = document.querySelectorAll('.job-checkbox');
+  allBoxes.forEach(function(cb) { cb.checked = master.checked; });
+  updateBulkBar();
+}
+
+function clearAllSelections() {
+  document.querySelectorAll('.job-checkbox').forEach(function(cb) { cb.checked = false; });
+  if (document.getElementById('selectAllCheckbox'))
+    document.getElementById('selectAllCheckbox').checked = false;
+  updateBulkBar();
+}
+
+/* ── Bulk delete modal ───────────────────────────────────────────────────── */
+function openBulkDeleteModal() {
+  var ids = getSelectedIds();
+  if (ids.length === 0) return;
+  document.getElementById('bulkDeleteCount').textContent = ids.length;
+  document.getElementById('bulkDeleteJobIds').value = ids.join(',');
+  document.getElementById('bulkDeleteJobList').innerHTML = ids.map(function(id) {
+    return '<code style="color:var(--accent)">' + id + '</code>';
+  }).join('&nbsp; ');
+  document.getElementById('bulkDeletePasswordInput').value = '';
+  var modal = document.getElementById('bulkDeleteModal');
+  modal.style.display = 'flex';
+  setTimeout(function() { document.getElementById('bulkDeletePasswordInput').focus(); }, 100);
+}
+function closeBulkDeleteModal() {
+  document.getElementById('bulkDeleteModal').style.display = 'none';
+  document.getElementById('bulkDeletePasswordInput').value = '';
+}
+document.getElementById('bulkDeleteModal').addEventListener('click', function(e) {
+  if (e.target === this) closeBulkDeleteModal();
+});
+
+/* ── QR CODE SCANNER (html5-qrcode — replaces dead Instascan) ────────────── */
+let html5QrScanner = null;
+const SCANNER_ELEMENT_ID = 'scanner-video-container';
+
+function openScannerModal() {
+  const modal = document.getElementById('scannerModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    // Small delay so modal is visible before camera starts
+    setTimeout(startScanner, 200);
+  }
+}
+
+function closeScannerModal() {
+  const modal = document.getElementById('scannerModal');
+  if (modal) modal.style.display = 'none';
+  stopScanner();
+}
+
+async function startScanner() {
+  const resultDiv   = document.getElementById('scanner-result');
+  const videoContainer = document.getElementById(SCANNER_ELEMENT_ID);
+
+  if (resultDiv) resultDiv.style.display = 'none';
+
+  // Guard: html5-qrcode must be loaded
+  if (typeof Html5Qrcode === 'undefined') {
+    showScannerError('❌ QR library failed to load. Check your internet connection and refresh.');
+    return;
+  }
+
+  // Stop any existing session first
+  await stopScanner();
+
+  // Clear the container so html5-qrcode can own it
+  if (videoContainer) {
+    videoContainer.innerHTML = `
+      <div id="scanner-guide" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+           width:70%;height:70%;border:2px solid rgba(102,126,234,0.6);border-radius:16px;
+           box-shadow:0 0 0 4px rgba(102,126,234,0.2);pointer-events:none;z-index:10;"></div>`;
+  }
+
+  try {
+    html5QrScanner = new Html5Qrcode(SCANNER_ELEMENT_ID);
+
+    const config = {
+      fps: 10,
+      qrbox: { width: 220, height: 220 },
+      aspectRatio: 1.0,
+      // Prefer rear/environment camera on mobile
+      videoConstraints: {
+        facingMode: { ideal: 'environment' }
+      }
+    };
+
+    await html5QrScanner.start(
+      { facingMode: { ideal: 'environment' } },
+      config,
+      (decodedText) => handleScanResult(decodedText),
+      (_errorMsg) => { /* ignore per-frame decode misses */ }
+    );
+
+  } catch (err) {
+    html5QrScanner = null;
+    console.error('QR scanner error:', err);
+
+    let msg = '❌ Camera error: ' + (err.message || err);
+    if (err && (err.toString().includes('NotAllowedError') || err.toString().includes('Permission'))) {
+      msg = '❌ Camera permission denied. Please allow camera access in your browser settings and try again.';
+    } else if (err && err.toString().includes('NotFound')) {
+      msg = '❌ No camera found on this device.';
+    } else if (err && err.toString().includes('NotReadable')) {
+      msg = '❌ Camera is already in use by another app. Close it and try again.';
+    } else if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      msg = '❌ Camera requires HTTPS. Your site is running over ' + location.protocol + ' — please use HTTPS.';
+    }
+    showScannerError(msg);
+  }
+}
+
+async function stopScanner() {
+  if (html5QrScanner) {
+    try {
+      const state = html5QrScanner.getState();
+      // State 2 = SCANNING, state 3 = PAUSED
+      if (state === 2 || state === 3) {
+        await html5QrScanner.stop();
+      }
+      html5QrScanner.clear();
+    } catch (e) {
+      console.warn('Stop error (safe to ignore):', e);
+    }
+    html5QrScanner = null;
+  }
+}
+
+function showScannerError(message) {
+  const container = document.getElementById(SCANNER_ELEMENT_ID);
+  if (container) {
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:center;min-height:300px;padding:24px;text-align:center;">
+        <div>
+          <div style="font-size:48px;margin-bottom:16px;">📷</div>
+          <div style="color:#EF5350;font-size:14px;line-height:1.6;">${message}</div>
+          <button onclick="restartScanner()" class="btn btn-primary"
+                  style="margin-top:20px;background:linear-gradient(135deg,#667eea,#764ba2);border:none;">
+            🔄 Try Again
+          </button>
+        </div>
+      </div>`;
+  }
+}
+
+function handleScanResult(content) {
+  const resultDiv = document.getElementById('scanner-result');
+
+  // Match MAK-YYYYMMDD-XXXXXX format
+  const jobMatch = content.match(/(MAK-\d{8}-[A-Z0-9]{6})/i);
+  const jobId = jobMatch ? jobMatch[1] : null;
+
+  if (jobId) {
+    if (resultDiv) {
+      resultDiv.innerHTML = '✅ Job found! Redirecting to ' + jobId + '...';
+      resultDiv.style.cssText = 'display:block;background:rgba(77,182,172,0.1);border:1px solid rgba(77,182,172,0.3);color:#4DB6AC;margin-top:16px;padding:14px;border-radius:16px;';
+    }
+    stopScanner();
+    setTimeout(() => {
+      closeScannerModal();
+      window.location.href = '/admin/jobs/' + jobId;
+    }, 600);
+  } else {
+    if (resultDiv) {
+      resultDiv.innerHTML = '❌ Invalid QR code. Scanned: ' + content.substring(0, 60);
+      resultDiv.style.cssText = 'display:block;background:rgba(239,83,80,0.1);border:1px solid rgba(239,83,80,0.3);color:#EF5350;margin-top:16px;padding:14px;border-radius:16px;';
+      setTimeout(() => { resultDiv.style.display = 'none'; }, 3000);
+    }
+  }
+}
+
+async function restartScanner() {
+  const resultDiv = document.getElementById('scanner-result');
+  if (resultDiv) resultDiv.style.display = 'none';
+  await stopScanner();
+  setTimeout(startScanner, 400);
+}
+
+// Close modal on outside click
+document.addEventListener('click', function(e) {
+  const modal = document.getElementById('scannerModal');
+  if (e.target === modal) closeScannerModal();
+});
+</script>
 {% endblock %}

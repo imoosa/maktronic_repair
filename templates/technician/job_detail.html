@@ -433,21 +433,179 @@
       </table>
     </div>
 
-    <!-- Barcode -->
-    <div class="card mb-4" id="barcode-card">
-      <div class="card-header">
-        <span class="card-title">🏷️ Barcode</span>
-        <button onclick="printBarcode()" class="btn btn-secondary btn-sm">🖨️ Print</button>
+    <!-- QR Code Card - Modern Design -->
+<div class="card mb-4" id="qrcode-card" style="overflow: hidden;">
+  <div class="card-header" style="background: linear-gradient(135deg, var(--bg2) 0%, var(--card) 100%);">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="width: 36px; height: 36px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+        📱
       </div>
-      <div style="display:flex;flex-direction:column;align-items:center;padding:12px 4px 4px;gap:6px;overflow:hidden;width:100%">
-        <div style="width:100%;overflow:hidden;display:flex;justify-content:center">
-          <svg id="barcode-svg" style="max-width:100%;height:auto;display:block"></svg>
+      <div>
+        <span class="card-title" style="font-size: 18px;">QR Code</span>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Scan to open job details</div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      
+      <button onclick="printQRCode()" class="btn btn-secondary btn-sm" style="display: flex; align-items: center; gap: 6px; padding: 6px 14px;">
+        <span>🖨️</span> <span>Print</span>
+      </button>
+    </div>
+  </div>
+  
+  <div style="padding: 24px 20px;">
+    <!-- QR Code Container -->
+    <div style="display: flex; justify-content: center; margin-bottom: 20px;">
+      <div id="qr-loading" style="display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted);">
+        <div style="width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: #667eea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+        <span style="font-size: 13px;">Generating QR code...</span>
+      </div>
+      <div id="qr-code-display" style="display: none; background: white; padding: 16px; border-radius: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"></div>
+    </div>
+    
+    <!-- Job Info Footer -->
+    <div style="border-top: 1px solid var(--border); padding-top: 16px; margin-top: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="background: var(--bg3); padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; color: var(--accent);">
+            {{ job.job_id }}
+          </span>
+          <span style="font-size: 12px; color: var(--muted);">•</span>
+          <span style="font-size: 13px; font-weight: 500;">{{ job.customer_name or '—' }}</span>
         </div>
-        <div style="font-size:10px;color:var(--muted);text-align:center;word-break:break-all;padding:0 4px">
-          {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="font-size: 11px; color: var(--muted);">{{ job.item_type or 'Device' }}</span>
+          {% if job.received_at %}
+          <span style="font-size: 10px; color: var(--muted); background: var(--bg3); padding: 2px 8px; border-radius: 12px;">
+            📅 {{ job.received_at[:10] }}
+          </span>
+          {% endif %}
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- Hidden QR code print area - Professional sticker design -->
+<div id="qr-print-area" style="display:none; text-align: center; background: white; padding: 0; margin: 0;">
+  <div style="background: white; padding: 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <!-- Header -->
+    <div style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #667eea;">
+      <div style="font-size: 10px; color: #667eea; font-weight: 600; letter-spacing: 1px;">MAKTRONICS REPAIR</div>
+      <div style="font-size: 8px; color: #999; margin-top: 2px;">Service Ticket</div>
+    </div>
+    
+    <!-- Job ID -->
+    <div style="font-family: monospace; font-size: 11px; font-weight: 700; color: #333; margin-bottom: 12px; background: #f5f5f5; display: inline-block; padding: 4px 12px; border-radius: 20px;">
+      {{ job.job_id }}
+    </div>
+    
+    <!-- QR Code Container for Print -->
+    <div id="qr-print-container" style="display: flex; justify-content: center; margin: 12px 0;"></div>
+    
+    <!-- Customer Info -->
+    <div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid #eee;">
+      <div style="font-size: 9px; font-weight: 600; color: #333;">{{ job.customer_name or '—' }}</div>
+      <div style="font-size: 8px; color: #666; margin-top: 2px;">{{ job.item_type or 'Device' }}</div>
+      <div style="font-size: 7px; color: #999; margin-top: 4px;">{{ job.received_at[:10] if job.received_at else '' }}</div>
+    </div>
+    
+    <!-- Footer -->
+    <div style="margin-top: 10px; font-size: 6px; color: #aaa; text-align: center;">
+      Scan with any QR reader
+    </div>
+  </div>
+</div>
+
+<!-- Scanner Modal - Modern Design -->
+<div class="modal-overlay" id="scannerModal" style="display:none; position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,0.85); align-items:center; justify-content:center; backdrop-filter: blur(4px);">
+  <div style="background: var(--card); border-radius: 28px; width: 95%; max-width: 550px; margin: 20px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); animation: modalSlideIn 0.3s ease;">
+    
+    <div style="padding: 20px 24px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+          <div style="font-size: 22px; font-weight: 700;">Scan QR Code</div>
+          <div style="font-size: 13px; opacity: 0.9; margin-top: 4px;">Position the code in front of camera</div>
+        </div>
+        <button onclick="closeScannerModal()" style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; font-size: 24px; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+          ✕
+        </button>
+      </div>
+    </div>
+    
+    <div style="padding: 24px;">
+      <div id="scanner-video-container" style="position: relative; background: #000; border-radius: 20px; overflow: hidden; min-height: 350px;">
+        <video id="scanner-video" style="width: 100%; border-radius: 20px; background: #000;"></video>
+        <canvas id="scanner-canvas" style="display:none"></canvas>
+        <div id="scanner-guide" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 70%; height: 70%; border: 2px solid rgba(102, 126, 234, 0.6); border-radius: 16px; box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.2); pointer-events: none;"></div>
+      </div>
+      
+      <div id="scanner-result" style="margin-top: 16px; padding: 14px; border-radius: 16px; display: none; animation: fadeIn 0.3s ease;"></div>
+      
+      <div class="info-banner blue" style="margin-top: 20px; padding: 12px; text-align: center; font-size: 12px; border-radius: 16px;">
+        💡 Tip: Ensure good lighting and hold the QR code steady
+      </div>
+    </div>
+    
+    <div style="padding: 16px 24px; border-top: 1px solid var(--border); display: flex; gap: 12px; justify-content: flex-end; background: var(--bg2);">
+      <button onclick="stopScanner()" class="btn btn-secondary" style="padding: 8px 20px;">Stop</button>
+      <button onclick="restartScanner()" class="btn btn-primary" style="padding: 8px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: none;">Restart</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  
+  @keyframes modalSlideIn {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  @keyframes pulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.4);
+    }
+    50% {
+      box-shadow: 0 0 0 8px rgba(102, 126, 234, 0);
+    }
+  }
+  
+  #qr-code-display canvas {
+    transition: transform 0.3s ease;
+  }
+  
+  #qr-code-display canvas:hover {
+    transform: scale(1.05);
+  }
+  
+  .btn-primary, .btn-secondary {
+    transition: all 0.2s ease;
+  }
+  
+  .btn-primary:hover, .btn-secondary:hover {
+    transform: translateY(-1px);
+  }
+</style>
 
     <!-- Inspection Findings -->
     {% if job.inspection_findings %}
@@ -804,5 +962,248 @@ function recalcEstimate() {
   document.getElementById('estimate_display').textContent = '₹' + total.toFixed(2);
   document.getElementById('estimate_amount_hidden').value = total.toFixed(2);
 }
+</script>
+
+<!-- QR Code Libraries -->
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+<script>
+/* ── QR CODE GENERATION ────────────────────────────────────────────────────── */
+function generateQRCode() {
+  const currentUrl = window.location.href.split('?')[0];
+  const loadingDiv = document.getElementById('qr-loading');
+  const displayDiv = document.getElementById('qr-code-display');
+  const printContainer = document.getElementById('qr-print-container');
+  
+  console.log("Generating QR for:", currentUrl);
+  
+  if (!displayDiv) return;
+  
+  // Clear and prepare
+  displayDiv.innerHTML = '';
+  if (printContainer) printContainer.innerHTML = '';
+  
+  try {
+    // Generate main QR
+    const qr = new QRCode(displayDiv, {
+      text: currentUrl,
+      width: 200,
+      height: 200,
+      colorDark: "#1a1a2e",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H
+    });
+    
+    // Generate print QR
+    if (printContainer) {
+      new QRCode(printContainer, {
+        text: currentUrl,
+        width: 130,
+        height: 130,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.H
+      });
+    }
+    
+    // Show QR, hide loading
+    loadingDiv.style.display = 'none';
+    displayDiv.style.display = 'block';
+    
+    // Add animation
+    const canvas = displayDiv.querySelector('canvas');
+    if (canvas) {
+      canvas.style.animation = 'fadeIn 0.5s ease';
+      canvas.style.borderRadius = '12px';
+    }
+    
+    console.log("QR generated successfully");
+  } catch (error) {
+    console.error("QR generation failed:", error);
+    loadingDiv.innerHTML = '<div style="color:#EF5350; text-align:center;">❌ Failed to generate QR code<br><small style="font-size:11px;">Please refresh and try again</small></div>';
+  }
+}
+
+/* ── QR CODE SCANNER ───────────────────────────────────────────────────────── */
+let html5QrCode = null;
+let scannerActive = false;
+
+function openScannerModal() {
+  const modal = document.getElementById('scannerModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    startScanner();
+  }
+}
+
+function closeScannerModal() {
+  const modal = document.getElementById('scannerModal');
+  if (modal) modal.style.display = 'none';
+  stopScanner();
+}
+
+async function startScanner() {
+  const resultDiv = document.getElementById('scanner-result');
+  const resultText = document.getElementById('scanner-result-text');
+  
+  if (html5QrCode) await stopScanner();
+  
+  html5QrCode = new Html5Qrcode("scanner-video");
+  
+  const config = {
+    fps: 10,
+    qrbox: { width: 280, height: 280 },
+    aspectRatio: 1.0
+  };
+  
+  try {
+    scannerActive = true;
+    if (resultDiv) {
+      resultDiv.style.display = 'none';
+      resultDiv.className = '';
+    }
+    
+    await html5QrCode.start(
+      { facingMode: "environment" },
+      config,
+      (decodedText) => {
+        console.log("Scanned:", decodedText);
+        handleScanResult(decodedText);
+      },
+      (errorMessage) => {
+        // Silent ignore
+      }
+    );
+  } catch (err) {
+    console.error("Scanner error:", err);
+    if (resultDiv && resultText) {
+      resultText.innerHTML = '❌ Cannot access camera. Please check permissions.';
+      resultDiv.style.display = 'block';
+      resultDiv.style.background = 'rgba(239,83,80,0.1)';
+      resultDiv.style.border = '1px solid rgba(239,83,80,0.3)';
+      resultDiv.style.color = '#EF5350';
+    }
+  }
+}
+
+async function stopScanner() {
+  if (html5QrCode && scannerActive) {
+    try {
+      await html5QrCode.stop();
+      scannerActive = false;
+      html5QrCode = null;
+    } catch (err) {
+      console.error("Stop error:", err);
+    }
+  }
+}
+
+function handleScanResult(url) {
+  if (!scannerActive) return;
+  
+  const jobMatch = url.match(/(MAK-\d{8}-[A-Z0-9]{6})/i);
+  const resultDiv = document.getElementById('scanner-result');
+  const resultText = document.getElementById('scanner-result-text');
+  
+  if (jobMatch) {
+    const jobId = jobMatch[1];
+    
+    // Show success
+    if (resultDiv && resultText) {
+      resultText.innerHTML = '✅ Job found! Redirecting...';
+      resultDiv.style.display = 'block';
+      resultDiv.style.background = 'rgba(77,182,172,0.1)';
+      resultDiv.style.border = '1px solid rgba(77,182,172,0.3)';
+      resultDiv.style.color = '#4DB6AC';
+    }
+    
+    stopScanner();
+    
+    setTimeout(() => {
+      closeScannerModal();
+      window.location.href = `/admin/jobs/${jobId}`;
+    }, 800);
+  } else {
+    if (resultDiv && resultText) {
+      resultText.innerHTML = '❌ Invalid QR code - Not a job ticket';
+      resultDiv.style.display = 'block';
+      resultDiv.style.background = 'rgba(239,83,80,0.1)';
+      resultDiv.style.border = '1px solid rgba(239,83,80,0.3)';
+      resultDiv.style.color = '#EF5350';
+      
+      setTimeout(() => {
+        resultDiv.style.display = 'none';
+      }, 3000);
+    }
+  }
+}
+
+function restartScanner() {
+  const resultDiv = document.getElementById('scanner-result');
+  if (resultDiv) resultDiv.style.display = 'none';
+  stopScanner().then(() => {
+    setTimeout(() => startScanner(), 300);
+  });
+}
+
+function printQRCode() {
+  const printArea = document.getElementById('qr-print-area');
+  if (printArea) {
+    printArea.style.display = 'flex';
+    printArea.style.justifyContent = 'center';
+    printArea.style.alignItems = 'center';
+    window.print();
+    setTimeout(() => {
+      printArea.style.display = 'none';
+    }, 500);
+  }
+}
+
+// Close modal on outside click
+document.addEventListener('click', function(e) {
+  const modal = document.getElementById('scannerModal');
+  if (e.target === modal) closeScannerModal();
+});
+
+// Initialize
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(generateQRCode, 300);
+});
+
+// Print styles
+const printStyle = document.createElement('style');
+printStyle.textContent = `
+  @media print {
+    @page {
+      size: 2.2in 2.2in;
+      margin: 0;
+    }
+    body * {
+      visibility: hidden !important;
+    }
+    #qr-print-area,
+    #qr-print-area * {
+      visibility: visible !important;
+    }
+    #qr-print-area {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      display: flex !important;
+      justify-content: center !important;
+      align-items: center !important;
+      background: white !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    #qr-print-area > div {
+      box-shadow: none !important;
+    }
+  }
+`;
+document.head.appendChild(printStyle);
 </script>
 {% endblock %}
