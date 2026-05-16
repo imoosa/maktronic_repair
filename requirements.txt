@@ -2,3 +2,4 @@ flask
 gunicorn
 razorpay
 werkzeug
+qrcode
