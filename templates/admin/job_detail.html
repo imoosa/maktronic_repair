@@ -409,7 +409,7 @@
       </table>
     </div>
 
-    <!-- Barcode -->
+    <!-- Barcode --
     <div class="card mb-4" id="barcode-card">
       <div class="card-header">
         <span class="card-title">🏷️ Barcode</span>
@@ -423,7 +423,69 @@
           {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
         </div>
       </div>
+    </div>-->
+    <!-- QR Code Card -->
+<div class="card mb-4" id="qrcode-card">
+  <div class="card-header">
+    <span class="card-title">📱 QR Code</span>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="openScanner()" class="btn btn-primary btn-sm">
+        📷 Scanner
+      </button>
+      <button onclick="printQRCode()" class="btn btn-secondary btn-sm">
+        🖨️ Print
+      </button>
     </div>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center;padding:12px 4px 4px;gap:10px;overflow:hidden;width:100%">
+    <div id="qr-loading" style="text-align:center;padding:20px;color:var(--muted)">
+      ⏳ Loading QR code...
+    </div>
+    <div id="qr-container" style="display:none;text-align:center">
+      <img id="qr-code-img" style="max-width:200px;height:auto;display:block;margin:0 auto;border-radius:12px;border:2px solid var(--border);padding:8px;background:#fff" alt="QR Code">
+      <div style="margin-top:12px;font-size:12px;color:var(--muted);text-align:center">
+        Scan to open job details
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);text-align:center;word-break:break-all;padding:0 4px;margin-top:8px">
+      {{ job.job_id }} · {{ job.customer_name }} · {{ job.item_type }}
+    </div>
+  </div>
+</div>
+
+<!-- Hidden QR code print area -->
+<div id="qr-print-area" style="display:none">
+  <div style="font-family:monospace;font-size:10pt;font-weight:700;margin-bottom:5px;text-align:center;color:#000">{{ job.job_id }}</div>
+  <img id="qr-print-img" style="display:block;max-width:2.5in;margin:0 auto">
+  <div style="margin-top:5px;font-size:7pt;text-align:center;color:#222">{{ job.customer_name }} · {{ job.item_type }}</div>
+  <div style="margin-top:2px;font-size:6.5pt;text-align:center;color:#555">{{ job.received_at[:10] }}</div>
+</div>
+
+<!-- QR Code Scanner Modal -->
+<div class="modal-overlay" id="scannerModal">
+  <div class="modal" style="max-width: 500px;">
+    <div class="modal-header">
+      <div class="modal-title">📷 Scan QR Code</div>
+      <button class="modal-close" onclick="closeScannerModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="scanner-video-container" style="width:100%;position:relative">
+        <video id="scanner-video" style="width:100%;border-radius:12px;background:#000"></video>
+        <canvas id="scanner-canvas" style="display:none"></canvas>
+      </div>
+      <div id="scanner-result" style="margin-top:12px;padding:10px;border-radius:8px;background:var(--bg3);display:none">
+        <div id="scanner-result-text" style="font-size:13px"></div>
+      </div>
+      <div class="info-banner blue" style="margin-top:12px">
+        📱 Position the QR code in front of the camera
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="stopScanner()">Stop Scanner</button>
+      <button type="button" class="btn btn-primary" onclick="restartScanner()">Restart</button>
+    </div>
+  </div>
+</div>
 
     <!-- Inspection Findings -->
     {% if job.inspection_findings %}
@@ -854,5 +916,186 @@ function togglePmFields(val) {
     history.replaceState({}, '', window.location.pathname);
   }
 })();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode/minified/html5-qrcode.min.js"></script>
+<script>
+// ── QR Code Generation ──────────────────────────────────────────────────────
+async function loadQRCode() {
+  const loadingEl = document.getElementById('qr-loading');
+  const containerEl = document.getElementById('qr-container');
+  const imgEl = document.getElementById('qr-code-img');
+  const printImgEl = document.getElementById('qr-print-img');
+  
+  try {
+    const response = await fetch(`/api/job/{{ job.job_id }}/qrcode`);
+    const data = await response.json();
+    
+    if (data.qr_code) {
+      imgEl.src = data.qr_code;
+      if (printImgEl) printImgEl.src = data.qr_code;
+      loadingEl.style.display = 'none';
+      containerEl.style.display = 'block';
+    } else {
+      loadingEl.innerHTML = '❌ Failed to generate QR code';
+    }
+  } catch (error) {
+    console.error('QR generation error:', error);
+    loadingEl.innerHTML = '❌ Error loading QR code';
+  }
+}
+
+// ── QR Code Scanner ─────────────────────────────────────────────────────────
+let html5QrCode = null;
+let scannerRunning = false;
+
+async function openScanner() {
+  const modal = document.getElementById('scannerModal');
+  modal.style.display = 'flex';
+  
+  // Initialize scanner
+  html5QrCode = new Html5Qrcode("scanner-video");
+  
+  const config = {
+    fps: 10,
+    qrbox: { width: 250, height: 250 },
+    aspectRatio: 1.0
+  };
+  
+  try {
+    scannerRunning = true;
+    await html5QrCode.start(
+      { facingMode: "environment" },
+      config,
+      (decodedText, decodedResult) => {
+        // Success callback
+        console.log(`Scanned: ${decodedText}`);
+        handleScanResult(decodedText);
+      },
+      (errorMessage) => {
+        // Error callback - ignore, just log
+        // console.log(errorMessage);
+      }
+    );
+  } catch (err) {
+    console.error("Scanner error:", err);
+    const resultDiv = document.getElementById('scanner-result');
+    const resultText = document.getElementById('scanner-result-text');
+    resultText.innerHTML = '❌ Camera access denied or not supported. Please check permissions.';
+    resultDiv.style.display = 'block';
+  }
+}
+
+function handleScanResult(url) {
+  if (!scannerRunning) return;
+  
+  // Check if URL contains job ID or is a job detail URL
+  let jobId = null;
+  
+  // Try to extract job ID from URL
+  const jobMatch = url.match(/\/admin\/jobs\/(MAK-\d+-\w+)/) ||
+                   url.match(/\/manager\/jobs\/(MAK-\d+-\w+)/) ||
+                   url.match(/\/tech\/jobs\/(MAK-\d+-\w+)/) ||
+                   url.match(/(MAK-\d+-\w+)/);
+  
+  if (jobMatch) {
+    jobId = jobMatch[1];
+  }
+  
+  if (jobId) {
+    // Stop scanner
+    stopScanner();
+    // Close modal
+    closeScannerModal();
+    // Redirect to job
+    window.location.href = `/manager/jobs/${jobId}`;
+  } else {
+    const resultDiv = document.getElementById('scanner-result');
+    const resultText = document.getElementById('scanner-result-text');
+    resultText.innerHTML = `❌ Invalid QR code. Not a valid job link.`;
+    resultDiv.style.display = 'block';
+    
+    // Hide after 3 seconds
+    setTimeout(() => {
+      resultDiv.style.display = 'none';
+    }, 3000);
+  }
+}
+
+async function stopScanner() {
+  if (html5QrCode && scannerRunning) {
+    try {
+      await html5QrCode.stop();
+      scannerRunning = false;
+    } catch (err) {
+      console.error("Error stopping scanner:", err);
+    }
+  }
+}
+
+function restartScanner() {
+  const resultDiv = document.getElementById('scanner-result');
+  resultDiv.style.display = 'none';
+  stopScanner().then(() => {
+    setTimeout(() => {
+      openScanner();
+    }, 500);
+  });
+}
+
+function closeScannerModal() {
+  stopScanner();
+  const modal = document.getElementById('scannerModal');
+  modal.style.display = 'none';
+}
+
+function printQRCode() {
+  const area = document.getElementById('qr-print-area');
+  if (area) {
+    area.style.display = 'flex';
+    area.style.flexDirection = 'column';
+    area.style.alignItems = 'center';
+    area.style.justifyContent = 'center';
+    window.print();
+    setTimeout(function() { area.style.display = 'none'; }, 500);
+  }
+}
+
+// ── CSS for print (update the print section) ────────────────────────────────
+const printStyle = document.createElement('style');
+printStyle.textContent = `
+  @media print {
+    @page {
+      size: 2.5in 1.8in;
+      margin: 0;
+    }
+    body * { visibility: hidden !important; }
+    #qr-print-area,
+    #qr-print-area * { visibility: visible !important; }
+    #qr-print-area {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 2.5in !important;
+      height: 1.8in !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      background: #fff !important;
+      padding: 8px !important;
+      box-sizing: border-box !important;
+      overflow: hidden !important;
+    }
+    #qr-print-img {
+      max-width: 1.8in !important;
+      height: auto !important;
+    }
+  }
+`;
+document.head.appendChild(printStyle);
+
+// Load QR code when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  loadQRCode();
+});
 </script>
 {% endblock %}
