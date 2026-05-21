@@ -13,6 +13,8 @@
 <div class="nav-section">
   <div class="nav-label">Management</div>
   <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+  <a href="/admin/products" class="nav-item"><span class="icon">📦</span> Products</a>
+  <a href="/admin/parties" class="nav-item"><span class="icon">🏢</span> Parties</a>
 </div>
 {% endblock %}
 
@@ -38,38 +40,102 @@
 
 {% block content %}
 <div style="max-width:680px" id="new-job-form">
-<form method="POST" enctype="multipart/form-data">
+<form method="POST" enctype="multipart/form-data" id="newJobForm">
 
-  <!-- Customer Details -->
+  <!-- Customer Details with Party Dropdown -->
   <div class="card mb-4">
     <div class="card-header">
-      <span class="card-title">📋 Customer Details</span>
+      <span class="card-title">👤 Customer Information</span>
     </div>
-    <div class="form-row">
+    
+    <!-- Party Dropdown -->
+    <div class="form-group">
+      <label class="form-label">Select Existing Party / Customer</label>
+      <select name="party_id" id="party_select" class="form-control" onchange="fillPartyDetails()">
+        <option value="">— Select existing party —</option>
+        {% for party in parties %}
+        <option value="{{ party.id }}" 
+                data-phone="{{ party.phone or '' }}" 
+                data-email="{{ party.email or '' }}" 
+                data-address="{{ party.address or '' }}">
+          {{ party.name }} {% if party.phone %}📞 {{ party.phone }}{% endif %}
+        </option>
+        {% endfor %}
+        <option value="new">➕ Add New Party (will be saved)</option>
+      </select>
+      <div class="info-banner blue" style="margin-top:5px; font-size:11px;">
+        💡 Select existing customer or choose "Add New Party" to create one
+      </div>
+    </div>
+
+    <!-- New Party Fields (hidden by default) -->
+    <div id="new_party_fields" style="display:none; background: var(--bg3); padding: 15px; border-radius: 10px; margin: 12px 0;">
+      <div style="font-weight: 600; margin-bottom: 12px;">📝 New Party Details</div>
       <div class="form-group">
-        <label class="form-label">Customer Name *</label>
-        <input type="text" name="customer_name" class="form-control" placeholder="Full name" required autocomplete="name">
+        <label class="form-label">Name *</label>
+        <input type="text" name="new_party_name" id="new_party_name" class="form-control" placeholder="Customer name">
       </div>
       <div class="form-group">
-        <label class="form-label">Phone Number *</label>
-        <input type="tel" name="customer_phone" class="form-control" placeholder="+91 98765 43210" required autocomplete="tel" inputmode="tel">
+        <label class="form-label">Phone Number</label>
+        <input type="tel" name="new_party_phone" id="new_party_phone" class="form-control" placeholder="e.g., 9876543210">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input type="email" name="new_party_email" id="new_party_email" class="form-control" placeholder="customer@example.com">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Address</label>
+        <textarea name="new_party_address" id="new_party_address" class="form-control" rows="2" placeholder="Full address"></textarea>
       </div>
     </div>
-    <div class="form-group" style="margin-bottom:0">
-      <label class="form-label">Email Address</label>
-      <input type="email" name="customer_email" class="form-control" placeholder="customer@email.com" autocomplete="email" inputmode="email">
-    </div>
+
+    <!-- Hidden fields for selected party details (submitted to backend) -->
+    <input type="hidden" name="customer_name" id="customer_name">
+    <input type="hidden" name="customer_phone" id="customer_phone">
+    <input type="hidden" name="customer_email" id="customer_email">
   </div>
 
-  <!-- Item Details -->
+  <!-- Item Details with Product Dropdown -->
   <div class="card mb-4">
     <div class="card-header">
-      <span class="card-title">🔧 Item Details</span>
+      <span class="card-title">📦 Device / Product Information</span>
     </div>
+    
+    <!-- Product Dropdown -->
+    <div class="form-group">
+      <label class="form-label">Select Product</label>
+      <select name="product_id" id="product_select" class="form-control" onchange="fillProductDetails()">
+        <option value="">— Select product —</option>
+        {% for product in products %}
+        <option value="{{ product.id }}" data-name="{{ product.name }}">
+          {{ product.name }}
+        </option>
+        {% endfor %}
+        <option value="new">➕ Add New Product (will be saved)</option>
+      </select>
+      <div class="info-banner blue" style="margin-top:5px; font-size:11px;">
+        💡 Select from dropdown OR type manually below
+      </div>
+    </div>
+
+    <!-- New Product Fields (hidden by default) -->
+    <div id="new_product_fields" style="display:none; background: var(--bg3); padding: 15px; border-radius: 10px; margin: 12px 0;">
+      <div style="font-weight: 600; margin-bottom: 12px;">📦 New Product Details</div>
+      <div class="form-group">
+        <label class="form-label">Product Name *</label>
+        <input type="text" name="new_product_name" id="new_product_name" class="form-control" placeholder="e.g., iPhone 15, Samsung Galaxy">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <textarea name="new_product_desc" id="new_product_desc" class="form-control" rows="2" placeholder="Product description (optional)"></textarea>
+      </div>
+    </div>
+
+    <!-- Manual Entry Fields -->
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">Item Type *</label>
-        <input type="text" name="item_type" class="form-control" placeholder="e.g. Mobile Phone, Laptop, TV..." required>
+        <input type="text" name="item_type" id="item_type_manual" class="form-control" placeholder="e.g. Mobile Phone, Laptop, TV..." required>
       </div>
       <div class="form-group">
         <label class="form-label">Assign Technician</label>
@@ -211,5 +277,97 @@
 
   updateUI();
 })();
+
+// ========== PARTY / CUSTOMER FUNCTIONS ==========
+function fillPartyDetails() {
+  const select = document.getElementById('party_select');
+  const selectedOption = select.options[select.selectedIndex];
+  const newPartyFields = document.getElementById('new_party_fields');
+  const customerName = document.getElementById('customer_name');
+  const customerPhone = document.getElementById('customer_phone');
+  const customerEmail = document.getElementById('customer_email');
+  
+  if (select.value === 'new') {
+    // Show new party form
+    newPartyFields.style.display = 'block';
+    customerName.value = '';
+    customerPhone.value = '';
+    customerEmail.value = '';
+  } else if (select.value) {
+    // Hide new party form and populate hidden fields
+    newPartyFields.style.display = 'none';
+    const name = selectedOption.text.split(' 📞')[0];
+    const phone = selectedOption.getAttribute('data-phone') || '';
+    const email = selectedOption.getAttribute('data-email') || '';
+    customerName.value = name;
+    customerPhone.value = phone;
+    customerEmail.value = email;
+  } else {
+    newPartyFields.style.display = 'none';
+    customerName.value = '';
+    customerPhone.value = '';
+    customerEmail.value = '';
+  }
+}
+
+// ========== PRODUCT FUNCTIONS ==========
+function fillProductDetails() {
+  const select = document.getElementById('product_select');
+  const selectedOption = select.options[select.selectedIndex];
+  const newProductFields = document.getElementById('new_product_fields');
+  const manualInput = document.getElementById('item_type_manual');
+  
+  if (select.value === 'new') {
+    // Show new product form
+    newProductFields.style.display = 'block';
+    manualInput.value = '';
+  } else if (select.value) {
+    // Hide new product form and populate manual input
+    newProductFields.style.display = 'none';
+    const productName = selectedOption.getAttribute('data-name') || '';
+    manualInput.value = productName;
+  } else {
+    newProductFields.style.display = 'none';
+  }
+}
+
+// ========== FORM SUBMISSION HANDLER ==========
+// Handle new party/product creation before submitting
+document.getElementById('newJobForm').addEventListener('submit', function(e) {
+  const partySelect = document.getElementById('party_select');
+  const productSelect = document.getElementById('product_select');
+  
+  // Handle new party creation
+  if (partySelect.value === 'new') {
+    const newName = document.getElementById('new_party_name').value.trim();
+    if (newName) {
+      const hiddenInput = document.createElement('input');
+      hiddenInput.type = 'hidden';
+      hiddenInput.name = 'new_party_data';
+      hiddenInput.value = JSON.stringify({
+        name: newName,
+        phone: document.getElementById('new_party_phone').value,
+        email: document.getElementById('new_party_email').value,
+        address: document.getElementById('new_party_address').value
+      });
+      this.appendChild(hiddenInput);
+    }
+  }
+  
+  // Handle new product creation
+  if (productSelect.value === 'new') {
+    const newProductName = document.getElementById('new_product_name').value.trim();
+    if (newProductName) {
+      const hiddenInput = document.createElement('input');
+      hiddenInput.type = 'hidden';
+      hiddenInput.name = 'new_product_data';
+      hiddenInput.value = JSON.stringify({
+        name: newProductName,
+        description: document.getElementById('new_product_desc').value
+      });
+      this.appendChild(hiddenInput);
+    }
+  }
+});
 </script>
 {% endblock %}

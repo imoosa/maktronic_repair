@@ -1,0 +1,118 @@
+{% extends 'shared/base.html' %}
+{% block title %}Products - Maktronics{% endblock %}
+{% block page_title %}Products{% endblock %}
+{% block page_sub %}Manage product catalog{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item"><span class="icon">📋</span> All Jobs</a>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+  <a href="/admin/products" class="nav-item active"><span class="icon">📦</span> Products</a>
+  <a href="/admin/parties" class="nav-item"><span class="icon">🏢</span> Parties</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header" style="justify-content: space-between;">
+    <span class="card-title">📦 Product List</span>
+    <button onclick="openModal('addProductModal')" class="btn btn-primary btn-sm">+ Add Product</button>
+  </div>
+  
+  <table style="width:100%;">
+    <thead>
+      <tr><th style="text-align:left; padding:12px 8px;">Product Name</th>
+        <th style="text-align:left; padding:12px 8px;">Description</th>
+        <th style="text-align:left; padding:12px 8px;">Created At</th>
+        <th style="text-align:center; padding:12px 8px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for product in products %}
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:12px 8px; font-weight:500;">{{ product.name }}</td>
+        <td style="padding:12px 8px; color:var(--muted);">{{ product.description or '—' }}</td>
+        <td style="padding:12px 8px; color:var(--muted); font-size:12px;">{{ product.created_at[:16] if product.created_at else '—' }}</td>
+        <td style="padding:12px 8px; text-align:center;">
+          <button onclick='editProduct({{ product.id|tojson }}, {{ product.name|tojson }}, {{ product.description|tojson }})' 
+                  class="btn btn-secondary btn-sm" style="margin-right:6px;">✏️ Edit</button>
+          <form method="POST" action="/admin/products/{{ product.id }}/delete" style="display:inline;" 
+                onsubmit="return confirm('Delete this product? This action cannot be undone.')">
+            <button type="submit" class="btn btn-danger btn-sm">🗑️ Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="4" style="padding:40px; text-align:center; color:var(--muted);">
+          No products yet. Click "Add Product" to create one.
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Add Product Modal -->
+<div class="modal-overlay" id="addProductModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">➕ Add New Product</div>
+      <button class="modal-close" onclick="closeModal('addProductModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/products/add">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Product Name *</label>
+          <input type="text" name="name" class="form-control" placeholder="e.g., iPhone 15, Samsung Galaxy, MacBook Pro" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description (Optional)</label>
+          <textarea name="description" class="form-control" rows="3" placeholder="Additional details about this product..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addProductModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Product</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Product Modal -->
+<div class="modal-overlay" id="editProductModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">✏️ Edit Product</div>
+      <button class="modal-close" onclick="closeModal('editProductModal')">✕</button>
+    </div>
+    <form method="POST" id="editProductForm">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Product Name *</label>
+          <input type="text" name="name" id="edit_product_name" class="form-control" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Description</label>
+          <textarea name="description" id="edit_product_desc" class="form-control" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editProductModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function editProduct(id, name, description) {
+  document.getElementById('edit_product_name').value = name || '';
+  document.getElementById('edit_product_desc').value = description || '';
+  document.getElementById('editProductForm').action = `/admin/products/${id}/edit`;
+  openModal('editProductModal');
+}
+</script>
+{% endblock %}

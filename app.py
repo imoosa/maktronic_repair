@@ -522,6 +522,27 @@ STATUS_ORDER = [
 ]
 
 # ─── DB SETUP ─────────────────────────────────────────────────────────────────
+def init_product_tables():
+    with get_db() as db:
+        db.executescript('''
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS parties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                phone TEXT,
+                email TEXT,
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        db.commit()
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -583,7 +604,11 @@ def init_db():
                 payment_token TEXT,
                 whatsapp_message_id TEXT,
                 payment_method TEXT DEFAULT 'razorpay',
-                FOREIGN KEY(assigned_tech_id) REFERENCES users(id)
+                party_id INTEGER,
+                product_id INTEGER,
+                FOREIGN KEY(assigned_tech_id) REFERENCES users(id),
+                FOREIGN KEY(party_id) REFERENCES parties(id),
+                FOREIGN KEY(product_id) REFERENCES products(id)
             );
 
             CREATE TABLE IF NOT EXISTS job_photos (
@@ -623,7 +648,10 @@ def init_db():
                 ('tech1', generate_password_hash('tech123'), 'technician', 'Ravi Kumar'))
             db.execute("INSERT INTO users (username, password, role, name) VALUES (?,?,?,?)",
                 ('tech2', generate_password_hash('tech456'), 'technician', 'Suresh Patil'))
+        
         db.commit()
+
+
 
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
 def allowed_file(filename):
@@ -1253,26 +1281,84 @@ def admin_new_job():
         job_id = generate_job_id()
         barcode = job_id
         tech_id = request.form.get('assigned_tech_id') or None
+        
+        # ========== HANDLE NEW PARTY CREATION FROM JSON (REPLACES OLD LOGIC) ==========
+        new_party_data = request.form.get('new_party_data')
+        if new_party_data:
+            import json
+            party_info = json.loads(new_party_data)
+            party_id = create_party_if_not_exists(
+                party_info.get('name', '').strip(),
+                party_info.get('phone', '').strip(),
+                party_info.get('email', '').strip(),
+                party_info.get('address', '').strip()
+            )
+        else:
+            party_id = request.form.get('party_id') or None
 
+        # ========== HANDLE NEW PRODUCT CREATION FROM JSON (REPLACES OLD LOGIC) ==========
+        new_product_data = request.form.get('new_product_data')
+        if new_product_data:
+            import json
+            product_info = json.loads(new_product_data)
+            product_id = create_product_if_not_exists(
+                product_info.get('name', '').strip(),
+                product_info.get('description', '').strip()
+            )
+        else:
+            product_id = request.form.get('product_id') or None
+
+        # ========== GET PARTY DETAILS ==========
+        # Get party details from either:
+        # 1. The new party we just created, OR
+        # 2. The existing selected party
+        party_name = None
+        party_phone = None
+        party_email = None
+        
+        if party_id:
+            party = db.execute("SELECT name, phone, email, address FROM parties WHERE id=?", (party_id,)).fetchone()
+            if party:
+                party_name = party['name']
+                party_phone = party['phone']
+                party_email = party['email']
+        else:
+            # Fallback to manually entered data if no party selected
+            party_name = request.form.get('customer_name')
+            party_phone = request.form.get('customer_phone')
+            party_email = request.form.get('customer_email')
+
+        # ========== GET PRODUCT DETAILS ==========
+        item_type = request.form.get('item_type')
+        if product_id:
+            product = db.execute("SELECT name FROM products WHERE id=?", (product_id,)).fetchone()
+            if product:
+                item_type = product['name']
+
+        # ========== CREATE JOB ==========
         data = {
             'job_id': job_id,
-            'customer_name': request.form.get('customer_name'),
-            'customer_phone': request.form.get('customer_phone'),
-            'customer_email': request.form.get('customer_email'),
+            'customer_name': party_name,
+            'customer_phone': party_phone,
+            'customer_email': party_email,
             'item_description': request.form.get('item_description'),
-            'item_type': request.form.get('item_type'),
+            'item_type': item_type,
             'barcode': barcode,
             'assigned_tech_id': tech_id,
+            'party_id': party_id,
+            'product_id': product_id,
             'status': 'sent_for_inspection',
             'notes': request.form.get('notes'),
         }
+        
         db.execute("""
             INSERT INTO jobs (job_id, customer_name, customer_phone, customer_email,
-            item_description, item_type, barcode, assigned_tech_id, status, notes)
+            item_description, item_type, barcode, assigned_tech_id, party_id, product_id, status, notes)
             VALUES (:job_id,:customer_name,:customer_phone,:customer_email,
-            :item_description,:item_type,:barcode,:assigned_tech_id,:status,:notes)
+            :item_description,:item_type,:barcode,:assigned_tech_id,:party_id,:product_id,:status,:notes)
         """, data)
 
+        # ========== HANDLE PHOTOS ==========
         photos = request.files.getlist('photos')
         for photo in photos[:3]:
             if photo and allowed_file(photo.filename):
@@ -1281,14 +1367,15 @@ def admin_new_job():
                 db.execute("INSERT INTO job_photos (job_id, photo_path) VALUES (?,?)",
                            (job_id, filename))
 
+        # ========== LOG ACTION ==========
         log_action(db, job_id, 'Job Created & Sent for Inspection', session['user_id'],
                    f"Customer: {data['customer_name']}")
 
-        # Send WhatsApp notification to customer
+        # ========== SEND WHATSAPP NOTIFICATION ==========
         job_data = dict(data)
         send_job_created_notification(job_data)
 
-        # Notify the assigned technician
+        # ========== NOTIFY TECHNICIAN ==========
         if tech_id:
             tech_name = db.execute("SELECT name FROM users WHERE id=?", (tech_id,)).fetchone()
             tech_label = tech_name['name'] if tech_name else 'Technician'
@@ -1302,9 +1389,12 @@ def admin_new_job():
         flash(f'Job {job_id} created and sent for inspection! WhatsApp notification sent to customer.', 'success')
         return redirect(url_for('admin_job_detail', job_id=job_id))
 
+    # ========== GET HANDLER (DISPLAY FORM) ==========
     db = get_db()
     technicians = db.execute("SELECT * FROM users WHERE role='technician'").fetchall()
-    return render_template('admin/new_job.html', technicians=technicians)
+    products = db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    parties = db.execute("SELECT * FROM parties ORDER BY name").fetchall()
+    return render_template('admin/new_job.html', technicians=technicians, products=products, parties=parties)
 
 @app.route('/admin/jobs/<job_id>')
 @admin_required
@@ -1878,6 +1968,146 @@ def admin_backup_restore():
     except Exception as e:
         flash(f'Restore failed: {str(e)}', 'error')
     return redirect(url_for('admin_backup_page'))
+
+# ─── PRODUCT ROUTES ──────────────────────────────────────────────────────────────
+@app.route('/admin/products')
+@admin_required
+def admin_products():
+    db = get_db()
+    products = db.execute("SELECT * FROM products ORDER BY name").fetchall()
+    return render_template('admin/products.html', products=products)
+
+@app.route('/admin/products/add', methods=['POST'])
+@admin_required
+def admin_add_product():
+    name = request.form.get('name', '').strip()
+    description = request.form.get('description', '').strip()
+    
+    if not name:
+        flash('Product name is required.', 'error')
+        return redirect(url_for('admin_products'))
+    
+    db = get_db()
+    try:
+        db.execute("INSERT INTO products (name, description) VALUES (?, ?)", (name, description))
+        db.commit()
+        flash(f'Product "{name}" added successfully!', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'Product "{name}" already exists.', 'error')
+    
+    return redirect(url_for('admin_products'))
+
+@app.route('/admin/products/<int:product_id>/delete', methods=['POST'])
+@admin_required
+def admin_delete_product(product_id):
+    db = get_db()
+    product = db.execute("SELECT name FROM products WHERE id=?", (product_id,)).fetchone()
+    if product:
+        db.execute("DELETE FROM products WHERE id=?", (product_id,))
+        db.commit()
+        flash(f'Product "{product["name"]}" deleted.', 'success')
+    return redirect(url_for('admin_products'))
+
+@app.route('/admin/products/<int:product_id>/edit', methods=['POST'])
+@admin_required
+def admin_edit_product(product_id):
+    name = request.form.get('name', '').strip()
+    description = request.form.get('description', '').strip()
+    
+    if not name:
+        flash('Product name is required.', 'error')
+        return redirect(url_for('admin_products'))
+    
+    db = get_db()
+    try:
+        db.execute("UPDATE products SET name=?, description=? WHERE id=?", (name, description, product_id))
+        db.commit()
+        flash(f'Product updated successfully!', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'Product "{name}" already exists.', 'error')
+    
+    return redirect(url_for('admin_products'))
+
+# ─── PARTY ROUTES ───────────────────────────────────────────────────────────────
+@app.route('/admin/parties')
+@admin_required
+def admin_parties():
+    db = get_db()
+    parties = db.execute("SELECT * FROM parties ORDER BY name").fetchall()
+    return render_template('admin/parties.html', parties=parties)
+
+@app.route('/admin/parties/add', methods=['POST'])
+@admin_required
+def admin_add_party():
+    name = request.form.get('name', '').strip()
+    phone = request.form.get('phone', '').strip()
+    email = request.form.get('email', '').strip()
+    address = request.form.get('address', '').strip()
+    
+    if not name:
+        flash('Party name is required.', 'error')
+        return redirect(url_for('admin_parties'))
+    
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO parties (name, phone, email, address) VALUES (?, ?, ?, ?)",
+            (name, phone, email, address)
+        )
+        db.commit()
+        flash(f'Party "{name}" added successfully!', 'success')
+    except Exception as e:
+        flash(f'Error adding party: {str(e)}', 'error')
+    
+    return redirect(url_for('admin_parties'))
+
+@app.route('/admin/parties/<int:party_id>/delete', methods=['POST'])
+@admin_required
+def admin_delete_party(party_id):
+    db = get_db()
+    party = db.execute("SELECT name FROM parties WHERE id=?", (party_id,)).fetchone()
+    if party:
+        db.execute("DELETE FROM parties WHERE id=?", (party_id,))
+        db.commit()
+        flash(f'Party "{party["name"]}" deleted.', 'success')
+    return redirect(url_for('admin_parties'))
+
+@app.route('/admin/parties/<int:party_id>/edit', methods=['POST'])
+@admin_required
+def admin_edit_party(party_id):
+    name = request.form.get('name', '').strip()
+    phone = request.form.get('phone', '').strip()
+    email = request.form.get('email', '').strip()
+    address = request.form.get('address', '').strip()
+    
+    if not name:
+        flash('Party name is required.', 'error')
+        return redirect(url_for('admin_parties'))
+    
+    db = get_db()
+    db.execute(
+        "UPDATE parties SET name=?, phone=?, email=?, address=? WHERE id=?",
+        (name, phone, email, address, party_id)
+    )
+    db.commit()
+    flash(f'Party "{name}" updated successfully!', 'success')
+    
+    return redirect(url_for('admin_parties'))
+
+# ─── API endpoints for dropdowns ─────────────────────────────────────────────────
+@app.route('/api/products')
+@login_required
+def api_products():
+    db = get_db()
+    products = db.execute("SELECT id, name FROM products ORDER BY name").fetchall()
+    return jsonify([dict(p) for p in products])
+
+@app.route('/api/parties')
+@login_required
+def api_parties():
+    db = get_db()
+    parties = db.execute("SELECT id, name, phone, email, address FROM parties ORDER BY name").fetchall()
+    return jsonify([dict(p) for p in parties])
 
 # ─── MANAGER ROUTES ───────────────────────────────────────────────────────────
 
@@ -2619,9 +2849,35 @@ def migrate_db():
         # ─────────────────────────────────────────────────────────────────────
 
         db.commit()
+def add_party_product_columns():
+    """Add party_id and product_id columns to jobs table if they don't exist"""
+    with get_db() as db:
+        # Get existing columns in jobs table
+        existing_cols = {row[1] for row in db.execute("PRAGMA table_info(jobs)").fetchall()}
+        
+        # Add party_id column if it doesn't exist
+        if 'party_id' not in existing_cols:
+            try:
+                db.execute("ALTER TABLE jobs ADD COLUMN party_id INTEGER REFERENCES parties(id)")
+                print("[migrate_db] Added column: party_id")
+            except Exception as e:
+                print(f"[migrate_db] Failed to add party_id: {e}")
+        
+        # Add product_id column if it doesn't exist
+        if 'product_id' not in existing_cols:
+            try:
+                db.execute("ALTER TABLE jobs ADD COLUMN product_id INTEGER REFERENCES products(id)")
+                print("[migrate_db] Added column: product_id")
+            except Exception as e:
+                print(f"[migrate_db] Failed to add product_id: {e}")
+        
+        db.commit()
+        
 
 init_db()
 migrate_db()
+add_party_product_columns()  
+init_product_tables()         
 
 if __name__ == '__main__':
     app.run(debug=True, port=5015)

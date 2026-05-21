@@ -1,0 +1,143 @@
+{% extends 'shared/base.html' %}
+{% block title %}Parties - Maktronics{% endblock %}
+{% block page_title %}Parties / Customers{% endblock %}
+{% block page_sub %}Manage customer/party database{% endblock %}
+
+{% block nav %}
+<div class="nav-section">
+  <div class="nav-label">Main</div>
+  <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
+  <a href="/admin/jobs" class="nav-item"><span class="icon">📋</span> All Jobs</a>
+  <a href="/admin/users" class="nav-item"><span class="icon">👥</span> Users</a>
+  <a href="/admin/products" class="nav-item"><span class="icon">📦</span> Products</a>
+  <a href="/admin/parties" class="nav-item active"><span class="icon">🏢</span> Parties</a>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div class="card-header" style="justify-content: space-between;">
+    <span class="card-title">🏢 Party / Customer List</span>
+    <button onclick="openModal('addPartyModal')" class="btn btn-primary btn-sm">+ Add Party</button>
+  </div>
+  
+  <div style="overflow-x: auto;">
+    <table style="width:100%;">
+      <thead>
+        <tr>
+          <th style="text-align:left; padding:12px 8px;">Name</th>
+          <th style="text-align:left; padding:12px 8px;">Phone</th>
+          <th style="text-align:left; padding:12px 8px;">Email</th>
+          <th style="text-align:left; padding:12px 8px;">Address</th>
+          <th style="text-align:left; padding:12px 8px;">Created At</th>
+          <th style="text-align:center; padding:12px 8px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for party in parties %}
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:12px 8px; font-weight:500;">{{ party.name }}</td>
+          <td style="padding:12px 8px;">{{ party.phone or '—' }}</td>
+          <td style="padding:12px 8px;">{{ party.email or '—' }}</td>
+          <td style="padding:12px 8px; max-width:200px; word-break:break-word;">{{ party.address or '—' }}</td>
+          <td style="padding:12px 8px; color:var(--muted); font-size:12px;">{{ party.created_at[:16] if party.created_at else '—' }}</td>
+          <td style="padding:12px 8px; text-align:center;">
+            <button onclick='editParty({{ party.id|tojson }}, {{ party.name|tojson }}, {{ party.phone|tojson }}, {{ party.email|tojson }}, {{ party.address|tojson }})' 
+                    class="btn btn-secondary btn-sm" style="margin-right:6px;">✏️ Edit</button>
+            <form method="POST" action="/admin/parties/{{ party.id }}/delete" style="display:inline;" 
+                  onsubmit="return confirm('Delete this party? This action cannot be undone.')">
+              <button type="submit" class="btn btn-danger btn-sm">🗑️ Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" style="padding:40px; text-align:center; color:var(--muted);">
+            No parties yet. Click "Add Party" to create one.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Add Party Modal -->
+<div class="modal-overlay" id="addPartyModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">➕ Add New Party / Customer</div>
+      <button class="modal-close" onclick="closeModal('addPartyModal')">✕</button>
+    </div>
+    <form method="POST" action="/admin/parties/add">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input type="text" name="name" class="form-control" placeholder="Customer/Party name" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone Number</label>
+          <input type="tel" name="phone" class="form-control" placeholder="e.g., 9876543210">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" name="email" class="form-control" placeholder="customer@example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Address</label>
+          <textarea name="address" class="form-control" rows="3" placeholder="Full address..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('addPartyModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Party</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Party Modal -->
+<div class="modal-overlay" id="editPartyModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">✏️ Edit Party</div>
+      <button class="modal-close" onclick="closeModal('editPartyModal')">✕</button>
+    </div>
+    <form method="POST" id="editPartyForm">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input type="text" name="name" id="edit_party_name" class="form-control" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone Number</label>
+          <input type="tel" name="phone" id="edit_party_phone" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" name="email" id="edit_party_email" class="form-control">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Address</label>
+          <textarea name="address" id="edit_party_address" class="form-control" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('editPartyModal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function editParty(id, name, phone, email, address) {
+  document.getElementById('edit_party_name').value = name || '';
+  document.getElementById('edit_party_phone').value = phone || '';
+  document.getElementById('edit_party_email').value = email || '';
+  document.getElementById('edit_party_address').value = address || '';
+  document.getElementById('editPartyForm').action = `/admin/parties/${id}/edit`;
+  openModal('editPartyModal');
+}
+</script>
+{% endblock %}

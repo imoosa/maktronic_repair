@@ -11,6 +11,8 @@
   <div class="nav-label">Main</div>
   <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
   <a href="/admin/jobs" class="nav-item active"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/products" class="nav-item"><span class="icon">📦</span> Products</a>
+  <a href="/admin/parties" class="nav-item"><span class="icon">🏢</span> Parties</a>
 </div>
 
 {% endblock %}
@@ -361,96 +363,6 @@ document.getElementById('deleteJobModal').addEventListener('click', function(e) 
 function getSelectedIds() {
   return Array.from(document.querySelectorAll('.job-checkbox:checked'))
     .map(cb => cb.value)
-    .filter((v, i, arr) => arr.indexOf(v) === i); // dedupe desktop+mobile
-}
-
-function updateBulkBar() {
-  var ids = getSelectedIds();
-  var bar = document.getElementById('bulkActionBar');
-  document.getElementById('selectedCount').textContent = ids.length;
-  bar.style.display = ids.length > 0 ? 'flex' : 'none';
-  // sync select-all checkbox state
-  var allBoxes = document.querySelectorAll('.job-checkbox:not(.job-checkbox-mobile)');
-  var selectAll = document.getElementById('selectAllCheckbox');
-  if (selectAll) {
-    selectAll.checked = allBoxes.length > 0 && ids.length >= allBoxes.length;
-    selectAll.indeterminate = ids.length > 0 && ids.length < allBoxes.length;
-  }
-}
-
-function toggleSelectAll(master) {
-  var allBoxes = document.querySelectorAll('.job-checkbox');
-  allBoxes.forEach(function(cb) { cb.checked = master.checked; });
-  updateBulkBar();
-}
-
-function clearAllSelections() {
-  document.querySelectorAll('.job-checkbox').forEach(function(cb) { cb.checked = false; });
-  if (document.getElementById('selectAllCheckbox'))
-    document.getElementById('selectAllCheckbox').checked = false;
-  updateBulkBar();
-}
-
-/* ── Bulk delete modal ───────────────────────────────────────────────────── */
-function openBulkDeleteModal() {
-  var ids = getSelectedIds();
-  if (ids.length === 0) return;
-  document.getElementById('bulkDeleteCount').textContent = ids.length;
-  document.getElementById('bulkDeleteJobIds').value = ids.join(',');
-  document.getElementById('bulkDeleteJobList').innerHTML = ids.map(function(id) {
-    return '<code style="color:var(--accent)">' + id + '</code>';
-  }).join('&nbsp; ');
-  document.getElementById('bulkDeletePasswordInput').value = '';
-  var modal = document.getElementById('bulkDeleteModal');
-  modal.style.display = 'flex';
-  setTimeout(function() { document.getElementById('bulkDeletePasswordInput').focus(); }, 100);
-}
-function closeBulkDeleteModal() {
-  document.getElementById('bulkDeleteModal').style.display = 'none';
-  document.getElementById('bulkDeletePasswordInput').value = '';
-}
-document.getElementById('bulkDeleteModal').addEventListener('click', function(e) {
-  if (e.target === this) closeBulkDeleteModal();
-});
-</script>
-
-<!-- ✅ html5-qrcode: actively maintained, no CDN issues, works on mobile & desktop -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-
-<script>
-/* ── Export dropdown ─────────────────────────────────────────────────────── */
-function toggleExportDropdown(e) {
-  e.stopPropagation();
-  var menu = document.getElementById('exportDropdownMenu');
-  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-}
-document.addEventListener('click', function() {
-  var menu = document.getElementById('exportDropdownMenu');
-  if (menu) menu.style.display = 'none';
-});
-
-/* ── Single delete modal ─────────────────────────────────────────────────── */
-function openDeleteModal(jobId, customerName) {
-  document.getElementById('deleteJobId').textContent = jobId;
-  document.getElementById('deleteJobCustomer').textContent = customerName || '—';
-  document.getElementById('deleteJobForm').action = '/admin/jobs/' + jobId + '/delete';
-  document.getElementById('deletePasswordInput').value = '';
-  var modal = document.getElementById('deleteJobModal');
-  modal.style.display = 'flex';
-  setTimeout(function() { document.getElementById('deletePasswordInput').focus(); }, 100);
-}
-function closeDeleteModal() {
-  document.getElementById('deleteJobModal').style.display = 'none';
-  document.getElementById('deletePasswordInput').value = '';
-}
-document.getElementById('deleteJobModal').addEventListener('click', function(e) {
-  if (e.target === this) closeDeleteModal();
-});
-
-/* ── Checkbox & bulk selection ───────────────────────────────────────────── */
-function getSelectedIds() {
-  return Array.from(document.querySelectorAll('.job-checkbox:checked'))
-    .map(cb => cb.value)
     .filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
@@ -502,7 +414,7 @@ document.getElementById('bulkDeleteModal').addEventListener('click', function(e)
   if (e.target === this) closeBulkDeleteModal();
 });
 
-/* ── QR CODE SCANNER (html5-qrcode — replaces dead Instascan) ────────────── */
+/* ── QR CODE SCANNER (html5-qrcode) ──────────────────────────────────────── */
 let html5QrScanner = null;
 const SCANNER_ELEMENT_ID = 'scanner-video-container';
 
@@ -510,7 +422,6 @@ function openScannerModal() {
   const modal = document.getElementById('scannerModal');
   if (modal) {
     modal.style.display = 'flex';
-    // Small delay so modal is visible before camera starts
     setTimeout(startScanner, 200);
   }
 }
@@ -522,21 +433,18 @@ function closeScannerModal() {
 }
 
 async function startScanner() {
-  const resultDiv   = document.getElementById('scanner-result');
+  const resultDiv = document.getElementById('scanner-result');
   const videoContainer = document.getElementById(SCANNER_ELEMENT_ID);
 
   if (resultDiv) resultDiv.style.display = 'none';
 
-  // Guard: html5-qrcode must be loaded
   if (typeof Html5Qrcode === 'undefined') {
     showScannerError('❌ QR library failed to load. Check your internet connection and refresh.');
     return;
   }
 
-  // Stop any existing session first
   await stopScanner();
 
-  // Clear the container so html5-qrcode can own it
   if (videoContainer) {
     videoContainer.innerHTML = `
       <div id="scanner-guide" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
@@ -551,7 +459,6 @@ async function startScanner() {
       fps: 10,
       qrbox: { width: 220, height: 220 },
       aspectRatio: 1.0,
-      // Prefer rear/environment camera on mobile
       videoConstraints: {
         facingMode: { ideal: 'environment' }
       }
@@ -561,7 +468,7 @@ async function startScanner() {
       { facingMode: { ideal: 'environment' } },
       config,
       (decodedText) => handleScanResult(decodedText),
-      (_errorMsg) => { /* ignore per-frame decode misses */ }
+      (_errorMsg) => {}
     );
 
   } catch (err) {
@@ -586,7 +493,6 @@ async function stopScanner() {
   if (html5QrScanner) {
     try {
       const state = html5QrScanner.getState();
-      // State 2 = SCANNING, state 3 = PAUSED
       if (state === 2 || state === 3) {
         await html5QrScanner.stop();
       }
@@ -618,7 +524,6 @@ function showScannerError(message) {
 function handleScanResult(content) {
   const resultDiv = document.getElementById('scanner-result');
 
-  // Match MAK-YYYYMMDD-XXXXXX format
   const jobMatch = content.match(/(MAK-\d{8}-[A-Z0-9]{6})/i);
   const jobId = jobMatch ? jobMatch[1] : null;
 
@@ -648,11 +553,9 @@ async function restartScanner() {
   setTimeout(startScanner, 400);
 }
 
-// Close modal on outside click
 document.addEventListener('click', function(e) {
   const modal = document.getElementById('scannerModal');
   if (e.target === modal) closeScannerModal();
 });
 </script>
-
 {% endblock %}
