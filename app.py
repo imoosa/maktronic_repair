@@ -682,6 +682,47 @@ def get_assigned_tech_id(db, job_id):
     row = db.execute("SELECT assigned_tech_id FROM jobs WHERE job_id=?", (job_id,)).fetchone()
     return row['assigned_tech_id'] if row else None
 
+# ========== ADD THESE HELPER FUNCTIONS HERE ==========
+def create_party_if_not_exists(name, phone, email, address):
+    """Create a new party if it doesn't exist. Returns party_id."""
+    if not name:
+        return None
+    db = get_db()
+    # Check if party already exists
+    existing = db.execute(
+        "SELECT id FROM parties WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if existing:
+        return existing['id']
+    
+    # Create new party
+    db.execute(
+        "INSERT INTO parties (name, phone, email, address) VALUES (?, ?, ?, ?)",
+        (name, phone, email, address)
+    )
+    db.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+def create_product_if_not_exists(name, description):
+    """Create a new product if it doesn't exist. Returns product_id."""
+    if not name:
+        return None
+    db = get_db()
+    # Check if product already exists
+    existing = db.execute(
+        "SELECT id FROM products WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if existing:
+        return existing['id']
+    
+    # Create new product
+    db.execute(
+        "INSERT INTO products (name, description) VALUES (?, ?)",
+        (name, description)
+    )
+    db.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
 # ─── AUTH ─────────────────────────────────────────────────────────────────────
 def login_required(f):
     @wraps(f)
