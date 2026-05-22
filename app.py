@@ -2150,6 +2150,90 @@ def api_parties():
     parties = db.execute("SELECT id, name, phone, email, address FROM parties ORDER BY name").fetchall()
     return jsonify([dict(p) for p in parties])
 
+
+# ─── PASSWORD RESET ROUTES ─────────────────────────────────────────────────────
+
+@app.route('/admin/change-password', methods=['GET', 'POST'])
+@admin_required
+def admin_change_password():
+    """Allow admin to change their own password"""
+    if request.method == 'POST':
+        current_password = request.form.get('current_password', '').strip()
+        new_password = request.form.get('new_password', '').strip()
+        confirm_password = request.form.get('confirm_password', '').strip()
+        
+        # Validation
+        if not current_password or not new_password or not confirm_password:
+            flash('All fields are required.', 'error')
+            return redirect(url_for('admin_change_password'))
+        
+        if new_password != confirm_password:
+            flash('New password and confirmation do not match.', 'error')
+            return redirect(url_for('admin_change_password'))
+        
+        if len(new_password) < 4:
+            flash('New password must be at least 4 characters long.', 'error')
+            return redirect(url_for('admin_change_password'))
+        
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE id=?", (session['user_id'],)).fetchone()
+        
+        if not user or not check_password_hash(user['password'], current_password):
+            flash('Current password is incorrect.', 'error')
+            return redirect(url_for('admin_change_password'))
+        
+        # Update password
+        new_hashed_password = generate_password_hash(new_password)
+        db.execute("UPDATE users SET password=? WHERE id=?", (new_hashed_password, session['user_id']))
+        db.commit()
+        
+        flash('Your password has been changed successfully!', 'success')
+        return redirect(url_for('admin_dashboard'))
+    
+    return render_template('admin/change_password.html')
+
+@app.route('/admin/users/reset-password/<int:user_id>', methods=['GET', 'POST'])
+@admin_required
+def admin_reset_user_password(user_id):
+    """Admin can reset any user's password"""
+    db = get_db()
+    user = db.execute("SELECT id, name, role, username FROM users WHERE id=?", (user_id,)).fetchone()
+    
+    if not user:
+        flash('User not found.', 'error')
+        return redirect(url_for('admin_users'))
+    
+    # Prevent admin from resetting their own password here (use change-password instead)
+    if user_id == session['user_id']:
+        flash('Use "Change Password" option for your own account.', 'warning')
+        return redirect(url_for('admin_change_password'))
+    
+    if request.method == 'POST':
+        new_password = request.form.get('new_password', '').strip()
+        confirm_password = request.form.get('confirm_password', '').strip()
+        
+        if not new_password:
+            flash('New password is required.', 'error')
+            return redirect(url_for('admin_reset_user_password', user_id=user_id))
+        
+        if new_password != confirm_password:
+            flash('Passwords do not match.', 'error')
+            return redirect(url_for('admin_reset_user_password', user_id=user_id))
+        
+        if len(new_password) < 4:
+            flash('Password must be at least 4 characters long.', 'error')
+            return redirect(url_for('admin_reset_user_password', user_id=user_id))
+        
+        # Update password
+        new_hashed_password = generate_password_hash(new_password)
+        db.execute("UPDATE users SET password=? WHERE id=?", (new_hashed_password, user_id))
+        db.commit()
+        
+        flash(f'Password for "{user["name"]}" has been reset successfully!', 'success')
+        return redirect(url_for('admin_users'))
+    
+    return render_template('admin/reset_user_password.html', user=user)
+
 # ─── MANAGER ROUTES ───────────────────────────────────────────────────────────
 
 @app.route('/manager')

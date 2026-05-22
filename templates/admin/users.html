@@ -40,10 +40,16 @@
   <div class="nav-label">Main</div>
   <a href="/admin" class="nav-item"><span class="icon">📊</span> Dashboard</a>
   <a href="/admin/jobs" class="nav-item"><span class="icon">🔧</span> All Jobs</a>
+  <a href="/admin/products" class="nav-item"><span class="icon">📦</span> Products</a>
+  <a href="/admin/parties" class="nav-item"><span class="icon">🏢</span> Parties</a>
 </div>
 <div class="nav-section">
   <div class="nav-label">Management</div>
   <a href="/admin/users" class="nav-item active"><span class="icon">👥</span> Users</a>
+</div>
+<div class="nav-section">
+  <div class="nav-label">Account</div>
+  <a href="/admin/change-password" class="nav-item"><span class="icon">🔐</span> Change Password</a>
 </div>
 {% endblock %}
 
@@ -69,7 +75,7 @@
         <th>Username</th>
         <th>Role</th>
         <th>Created</th>
-        <th>Actions</th>
+        <th style="text-align:center">Actions</th>
       </tr>
     </thead>
     <tbody>
@@ -83,12 +89,19 @@
           {% else %}<span class="role-pill role-tech">🔧 Technician</span>{% endif %}
         </td>
         <td style="font-size:11px;color:var(--muted);white-space:nowrap">{{ user.created_at[:10] }}</td>
-        <td>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <td style="padding:12px 8px; text-align:center;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center">
             {% if user.role == 'manager' %}
             <button class="toggle-perms" onclick="togglePerms({{ user.id }})">🔐 Permissions</button>
             {% endif %}
+            
+            <!-- Reset Password Button (visible for all users except current logged-in user) -->
             {% if user.id != session.user_id %}
+            <a href="/admin/users/reset-password/{{ user.id }}" 
+               class="btn btn-secondary btn-sm" style="margin-right:6px;"
+               title="Reset Password">
+              🔑 Reset
+            </a>
             <form method="POST" action="/admin/users/delete/{{ user.id }}" style="display:inline"
                   onsubmit="return confirm('Delete {{ user.name }}?')">
               <button type="submit" class="btn btn-danger btn-xs">🗑 Delete</button>
@@ -153,7 +166,13 @@
       {% if user.role == 'manager' %}
       <button class="toggle-perms" onclick="togglePerms({{ user.id }})" style="padding:7px 12px">🔐 Permissions</button>
       {% endif %}
+      
+      <!-- Reset Password Button (mobile) - visible for all users except current logged-in user -->
       {% if user.id != session.user_id %}
+      <a href="/admin/users/reset-password/{{ user.id }}" 
+         class="btn btn-secondary btn-sm" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;">
+        🔑 Reset
+      </a>
       <form method="POST" action="/admin/users/delete/{{ user.id }}" style="display:inline"
             onsubmit="return confirm('Delete {{ user.name }}?')">
         <button type="submit" class="btn btn-danger btn-xs">🗑 Delete</button>
